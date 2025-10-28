@@ -81,7 +81,6 @@ def make_data(
         K = pd.DataFrame(K, index=names_in_M, columns=names_in_M)
     
     if R is None:
-        print("Assuming that the residual covariance in the mixed model is identity.")
         R = np.eye(K.shape[0])
         R = pd.DataFrame(R, index=K.index, columns=K.columns)
     
