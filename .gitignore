@@ -2,3 +2,16 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
+dist/
+build/
+.coverage
+.pytest_cache/
+*.log
+.DS_Store
+*.png
+*.csv
+
+
+# github folder 
+.github/

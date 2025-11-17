@@ -31,4 +31,4 @@ from trainselpy.utils import (
 # Import data module
 from trainselpy.data import wheat_data
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

@@ -8,7 +8,7 @@ TrainSelPy provides tools for optimizing the selection of training populations, 
 
 ## Installation
 
-### From PyPI
+### From PyPI (Coming Soon)
 
 ```bash
 pip install trainselpy
@@ -17,9 +17,21 @@ pip install trainselpy
 ### From Source
 
 ```bash
-git clone https://github.com/yourusername/trainselpy.git
+git clone https://github.com/denizakdemir/trainselpy.git
 cd trainselpy
 pip install -e .
+```
+
+### Optional Dependencies
+
+For R data conversion:
+```bash
+pip install rpy2
+```
+
+For enhanced plotting:
+```bash
+pip install seaborn
 ```
 
 ## Key Features
@@ -206,12 +218,12 @@ For more details and advanced usage, see the examples directory and the API docu
 
 ## Requirements
 
-- numpy
-- scipy
-- pandas
-- scikit-learn
-- matplotlib
-- joblib
+- numpy>=1.19.0
+- scipy>=1.5.0
+- pandas>=1.0.0
+- scikit-learn>=0.23.0
+- matplotlib>=3.2.0
+- joblib>=0.16.0
 
 Optional:
 - rpy2 (for converting R data)
