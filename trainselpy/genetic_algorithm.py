@@ -372,8 +372,8 @@ def crossover(
                                 start = points[k - 1] if k > 0 else 0
                                 end = points[k]
                                 
-                                temp = child1.int_values[j][start:end].copy()
-                                child1.int_values[j][start:end] = child2.int_values[j][start:end].copy()
+                                temp = child1.int_values[j][start:end]
+                                child1.int_values[j][start:end] = child2.int_values[j][start:end]
                                 child2.int_values[j][start:end] = temp
                                 
                                 # Check set type and fix if needed
@@ -831,8 +831,15 @@ def genetic_algorithm(
                     temp_final
                 )
                 # Replace the original if the refined solution is better
-                if refined.fitness > sorted_pop[i].fitness:
-                    sorted_pop[i] = refined.copy()
+                if n_stat > 1:
+                    # For multi-objective, check dominance instead of scalar fitness
+                    if all(refined.multi_fitness[k] >= sorted_pop[i].multi_fitness[k] for k in range(n_stat)) and \
+                       any(refined.multi_fitness[k] > sorted_pop[i].multi_fitness[k] for k in range(n_stat)):
+                        sorted_pop[i] = refined.copy()
+                else:
+                    # For single-objective, use scalar fitness
+                    if refined.fitness > sorted_pop[i].fitness:
+                        sorted_pop[i] = refined.copy()
             # Update the population with the refined elites
             for i in range(min(n_elite_saved, len(sorted_pop))):
                 population[i] = sorted_pop[i].copy()
