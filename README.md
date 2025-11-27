@@ -1,10 +1,18 @@
 # TrainSelPy
 
-A pure Python implementation of the TrainSel R package for optimal selection of training populations.
+A general-purpose GA-SANN hybrid optimizer for complex optimization problems (subset, ordered subset, integer, continuous) and combinations of these. While originally designed for optimal selection of training populations, it is applicable to a wide range of optimization tasks.
 
 ## Overview
 
-TrainSelPy provides tools for optimizing the selection of training populations, primarily for genomic selection and experimental design. It implements genetic algorithms and simulated annealing to select optimal subsets from candidate sets based on various criteria.
+TrainSelPy provides a flexible framework for solving complex optimization problems using a hybrid approach combining Genetic Algorithms (GA) and Simulated Annealing (SANN). It supports various variable types including subsets (unordered sets), ordered subsets, integer variables, and continuous variables, as well as combinations of these.
+
+While the package includes specialized criteria for genomic selection and experimental design (such as CDMean, D-optimality, and PEV), its core engine is a general-purpose optimizer capable of handling:
+
+- **Subset Selection**: Selecting the best subset of items from a larger pool (e.g., feature selection, team formation).
+- **Ordered Subset Selection**: Selecting a subset where the order matters (e.g., routing, scheduling).
+- **Continuous Optimization**: Optimizing continuous parameters.
+- **Mixed-Integer Optimization**: Problems involving both discrete and continuous variables.
+- **Multi-Objective Optimization**: Simultaneously optimizing multiple conflicting objectives.
 
 ## Installation
 
