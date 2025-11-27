@@ -16,7 +16,10 @@ from trainselpy.optimization_criteria import (
     pev_opt,
     cdmean_opt,
     cdmean_opt_target,
-    fun_opt_prop
+    fun_opt_prop,
+    aopt,
+    eopt,
+    coverage_opt
 )
 
 from trainselpy.utils import (

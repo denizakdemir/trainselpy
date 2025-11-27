@@ -36,15 +36,17 @@ def custom_cdmean(soln: List[int], data: Dict[str, Any]) -> float:
     # Add lambda to diagonal
     V_inv = np.linalg.inv(G_soln_soln + lambda_val * np.eye(len(soln)))
     
-    # Compute sum of V_inv
-    sum_V_inv = np.sum(V_inv)
+    # Compute the sum vector: V_inv @ 1 (where 1 is a vector of ones)
+    ones = np.ones(len(soln))
+    V_inv_1 = V_inv @ ones
     
-    # Compute V_inv_2 (the second term) - Using a different approach to avoid reshape
-    # Using matrix outer product directly
-    V_inv_2 = np.zeros((len(soln), len(soln)))
-    for i in range(len(soln)):
-        for j in range(len(soln)):
-            V_inv_2[i, j] = V_inv.sum() * (V_inv[i, j] / sum_V_inv)
+    # Compute the scalar: 1' @ V_inv @ 1 (total sum of V_inv)
+    sum_V_inv = ones @ V_inv_1
+    
+    # Compute V_inv_2 as the outer product of the sum vector divided by the total sum
+    # V_inv_2 = (V_inv @ 1)(V_inv @ 1)' / (1' @ V_inv @ 1)
+    V_inv_2 = np.outer(V_inv_1, V_inv_1) / sum_V_inv
+
     
     # Compute the complete matrix
     outmat = G_all_soln @ (V_inv - V_inv_2) @ G_all_soln.T

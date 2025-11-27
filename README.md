@@ -45,15 +45,20 @@ pip install seaborn
 
 - **Built-in Optimization Criteria**:
   - CDMean: For mixed models, optimizing prediction accuracy
+  - CDMean Target: CDMean focused on a specific target set of individuals
   - D-optimality: Maximizing the determinant of the information matrix
+  - A-optimality: Minimizing the average variance (trace of the inverse information matrix)
+  - E-optimality: Minimizing the worst-case variance (maximum eigenvalue of the inverse information matrix)
   - PEV: Minimizing prediction error variance
   - Maximin: Maximizing the minimum distance between selected samples
+  - Coverage: Minimizing the maximum distance from any candidate to the nearest selected sample
 
 - **Advanced Optimization Algorithms**:
   - Genetic Algorithm (GA): Population-based optimization
   - Simulated Annealing (SANN): Fine-tuning solutions
   - Island Model: Multiple populations evolving in parallel
   - Multi-objective optimization with diverse Pareto front solutions
+  - Solution Diversity: Mechanism to ensure uniqueness of solutions on the Pareto front
 
 - **Parallelization**:
   - Support for parallel computing to speed up optimization
