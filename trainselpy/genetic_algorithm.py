@@ -893,7 +893,7 @@ def genetic_algorithm(
     cross_prob = control.get("crossprob", 0.5)
     cross_intensity = control.get("crossintensity", 0.75)
     n_iter_sann = control.get("niterSANN", 20)  # Reduced from 50 to 20 for efficiency
-    sann_frequency = control.get("sannFrequency", 20)  # Apply SA every N generations
+    sann_frequency = control.get("sannFrequency", 5)  # Apply SA every N generations
     temp_init = control.get("tempini", 100.0)
     temp_final = control.get("tempfin", 0.1)
     dynamic_n_elite = control.get("dynamicNelite", True)
