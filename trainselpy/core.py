@@ -4,7 +4,7 @@ Core module implementing the main functionality of TrainSelPy.
 
 import numpy as np
 import pandas as pd
-from typing import List, Dict, Callable, Union, Optional, Any
+from typing import List, Dict, Callable, Union, Optional, Any, TypedDict
 from dataclasses import dataclass
 import time
 from joblib import Parallel, delayed
@@ -15,10 +15,56 @@ import warnings
 import random
 
 from trainselpy.optimization_criteria import cdmean_opt
-from trainselpy.genetic_algorithm import (
+from trainselpy.algorithms import (
     genetic_algorithm,
     island_model_ga
 )
+
+
+class TrainSelData(TypedDict, total=False):
+    G: Union[np.ndarray, pd.DataFrame]
+    R: Union[np.ndarray, pd.DataFrame]
+    lambda_val: float
+    labels: pd.DataFrame
+    Nind: int
+    class_name: str
+    X: Optional[np.ndarray]
+
+
+class ControlParams(TypedDict, total=False):
+    size: str
+    niterations: int
+    minitbefstop: int
+    nEliteSaved: int
+    nelite: int
+    npop: int
+    mutprob: float
+    mutintensity: float
+    crossprob: float
+    crossintensity: float
+    niterSANN: int
+    tempini: float
+    tempfin: float
+    dynamicNelite: bool
+    progress: bool
+    parallelizable: bool
+    mc_cores: int
+    nislands: int
+    niterIslands: int
+    minitbefstopIslands: int
+    nEliteSavedIslands: int
+    neliteIslands: int
+    npopIslands: int
+    niterSANNislands: int
+    solution_diversity: bool
+    trace: bool
+    use_surrogate: bool
+    surrogate_start_gen: int
+    surrogate_update_freq: int
+    surrogate_prescreen_factor: int
+    use_surrogate_objective: bool
+    surrogate_generation_prob: float
+    use_nsga3: bool
 
 
 def make_data(
@@ -29,7 +75,7 @@ def make_data(
     Ve: Optional[np.ndarray] = None,
     lambda_val: Optional[float] = None,
     X: Optional[np.ndarray] = None
-) -> Dict[str, Any]:
+) -> TrainSelData:
     """
     Create a data structure for TrainSel optimization.
     
@@ -122,13 +168,13 @@ def make_data(
             'names': big_K.index
         })
     
-    result = {
+    result: TrainSelData = {
         'G': big_K,
         'R': big_R,
-        'lambda': lambda_val,
+        'lambda_val': lambda_val,
         'labels': labels,
         'Nind': K.shape[0],
-        'class': "TrainSel_Data"
+        'class_name': "TrainSel_Data"
     }
     
     if X is not None:
@@ -163,8 +209,15 @@ def train_sel_control(
     npopIslands: int = 200,
     niterSANNislands: int = 30,
     solution_diversity: bool = True,
-    trace: bool = False
-) -> Dict[str, Any]:
+    trace: bool = False,
+    use_surrogate: bool = False,
+    surrogate_start_gen: int = 10,
+    surrogate_update_freq: int = 5,
+    surrogate_prescreen_factor: int = 5,
+    use_surrogate_objective: bool = False,
+    surrogate_generation_prob: float = 0.0,
+    use_nsga3: bool = False
+) -> ControlParams:
     """
     Create a control object for the TrainSel function.
     
@@ -224,13 +277,27 @@ def train_sel_control(
         the one with the best overall fitness, ensuring more diverse solutions.
     trace : bool
         Whether to save the trace of the optimization.
+    use_surrogate : bool
+        Whether to use surrogate-assisted optimization.
+    surrogate_start_gen : int
+        Generation to start using surrogate.
+    surrogate_update_freq : int
+        Frequency of surrogate model updates.
+    surrogate_prescreen_factor : int
+        Factor for generating extra offspring for pre-screening.
+    use_surrogate_objective : bool
+        Whether to use the surrogate model as the objective function.
+    surrogate_generation_prob : float
+        Probability of generating offspring using surrogate optimization.
+    use_nsga3 : bool
+        Whether to use NSGA-III selection for multi-objective optimization.
         
     Returns
     -------
     Dict[str, Any]
         Control object for the TrainSel function.
     """
-    control = {
+    control: ControlParams = {
         "size": size,
         "niterations": niterations,
         "minitbefstop": minitbefstop,
@@ -247,7 +314,7 @@ def train_sel_control(
         "dynamicNelite": dynamicNelite,
         "progress": progress,
         "parallelizable": parallelizable,
-        "mc.cores": mc_cores,
+        "mc_cores": mc_cores,
         "nislands": nislands,
         "niterIslands": niterIslands,
         "minitbefstopIslands": minitbefstopIslands,
@@ -256,13 +323,20 @@ def train_sel_control(
         "npopIslands": npopIslands,
         "niterSANNislands": niterSANNislands,
         "solution_diversity": solution_diversity,
-        "trace": trace
+        "trace": trace,
+        "use_surrogate": use_surrogate,
+        "surrogate_start_gen": surrogate_start_gen,
+        "surrogate_update_freq": surrogate_update_freq,
+        "surrogate_prescreen_factor": surrogate_prescreen_factor,
+        "use_surrogate_objective": use_surrogate_objective,
+        "surrogate_generation_prob": surrogate_generation_prob,
+        "use_nsga3": use_nsga3
     }
     
     return control
 
 
-def set_control_default(size: str = "free") -> Dict[str, Any]:
+def set_control_default(size: str = "free", **kwargs) -> ControlParams:
     """
     Set default parameters for the TrainSel control object.
     
@@ -270,6 +344,8 @@ def set_control_default(size: str = "free") -> Dict[str, Any]:
     ----------
     size : str
         Size of the problem (default is "free").
+    **kwargs
+        Additional control parameters.
         
     Returns
     -------
@@ -296,7 +372,8 @@ def set_control_default(size: str = "free") -> Dict[str, Any]:
         parallelizable=False,
         mc_cores=1,
         nislands=1,
-        solution_diversity=True
+        solution_diversity=True,
+        **kwargs
     )
 
 
@@ -315,7 +392,7 @@ class TrainSelResult:
 
 
 def train_sel(
-    data: Optional[Dict[str, Any]] = None,
+    data: Optional[TrainSelData] = None,
     candidates: Optional[List[List[int]]] = None,
     setsizes: Optional[List[int]] = None,
     ntotal: Optional[int] = None,
@@ -323,7 +400,7 @@ def train_sel(
     stat: Optional[Callable] = None,
     n_stat: int = 1,
     target: Optional[List[int]] = None,
-    control: Optional[Dict[str, Any]] = None,
+    control: Optional[ControlParams] = None,
     init_sol: Optional[Dict[str, Any]] = None,
     packages: List[str] = [],
     n_jobs: int = 1,
@@ -402,7 +479,7 @@ def train_sel(
     # Extract parameters from control.
     nislands = control.get("nislands", 1)
     parallelizable = control.get("parallelizable", False)
-    n_cores = control.get("mc.cores", 1)
+    n_cores = control.get("mc_cores", 1)
     solution_diversity_param = control.get("solution_diversity", True)
     
     # Validate candidates and setsizes.
@@ -540,7 +617,7 @@ def time_estimation(
     nind: int, 
     nsel: int, 
     niter: int = 100, 
-    control: Optional[Dict[str, Any]] = None
+    control: Optional[ControlParams] = None
 ) -> float:
     """
     Estimate the time required for optimization.

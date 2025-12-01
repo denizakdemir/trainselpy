@@ -59,6 +59,8 @@ def main():
     if isinstance(K_200, pd.DataFrame):
         K_200 = K_200.values
     ts_data = make_data(K=K_200)
+    ts_data["G"] = K_200       # For CDMean
+    ts_data["lambda"] = 0.01   # For CDMean
     
     # -------------------------------------------------------------------------
     # Set control parameters.
