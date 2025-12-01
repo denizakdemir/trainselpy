@@ -69,6 +69,8 @@ def main():
     print("\nCreating TrainSel data object...")
     ts_data = make_data(K=K)
     ts_data["FeatureMat"] = M  # For D-optimality
+    ts_data["G"] = K           # For CDMean
+    ts_data["lambda"] = 0.01   # For CDMean
     
     # Run the selection algorithm with custom optimization criterion
     print("\nRunning TrainSel with custom multi-objective criterion...")

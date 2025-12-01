@@ -48,14 +48,38 @@ def custom_cdmean(soln: List[int], data: Dict[str, Any]) -> float:
     V_inv_2 = np.outer(V_inv_1, V_inv_1) / sum_V_inv
 
     
-    # Compute the complete matrix
-    outmat = G_all_soln @ (V_inv - V_inv_2) @ G_all_soln.T
+    # Compute V_inv_G = V_inv @ G_all_soln.T
+    V_inv_G = V_inv @ G_all_soln.T
+    
+    # Compute diagonal efficiently:
+    # diag(G_all_soln @ (V_inv - V_inv_2) @ G_all_soln.T)
+    # = sum over axis 1 of: G_all_soln * (V_inv_G - outer_contrib).T
+    # where outer_contrib = V_inv_2 @ G_all_soln.T
+    
+    # Precompute V_inv_2 @ G_all_soln.T
+    # V_inv_2 = (V_inv_1 @ V_inv_1.T) / sum_V_inv
+    # So V_inv_2 @ G_all_soln.T = (V_inv_1 / sum_V_inv) * (V_inv_1.T @ G_all_soln.T)
+    # Note: V_inv_1 is (k,), G_all_soln.T is (k, N)
+    
+    term1 = V_inv_1 / sum_V_inv
+    term2 = V_inv_1 @ G_all_soln.T
+    outer_contrib_T = np.outer(term1, term2) # (k, N)
+    
+    # Now compute diagonal elements
+    # (V_inv_G - outer_contrib_T).T is (N, k)
+    # G_all_soln is (N, k)
+    # Element-wise multiply and sum across columns (axis 1)
+    
+    diff_T = V_inv_G - outer_contrib_T
+    diag_vals = np.sum(G_all_soln * diff_T.T, axis=1)
+    
+    # Normalize by G diagonal
     G_diag = np.diag(G_matrix)
-    outmat = outmat / G_diag[:, np.newaxis]
+    diag_vals = diag_vals / G_diag
     
     # Exclude the diagonal elements corresponding to the selected samples
     mask = np.ones(G_matrix.shape[0], dtype=bool)
     mask[soln] = False
     
     # Return the mean of the diagonal elements (excluding selected samples)
-    return np.mean(np.diag(outmat)[mask])
+    return np.mean(diag_vals[mask])

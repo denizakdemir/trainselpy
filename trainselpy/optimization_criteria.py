@@ -120,17 +120,42 @@ def dopt(soln: List[int], data: Dict[str, Any]) -> float:
         D-optimality value (log determinant)
     """
     fmat = _ensure_numpy(data["FeatureMat"])
-    n_samples = fmat.shape[0]
+    n_samples, d = fmat.shape
     _check_inputs(soln, n_samples)
 
-    selected_features = fmat[soln, :]
+    selected_features = fmat[soln, :].astype(np.float64)
+    k = len(soln)
+    
+    regularization = 1e-10
 
     try:
-        # Use Cholesky decomposition (3x faster than slogdet)
-        L = _compute_information_matrix_cholesky(selected_features, regularization=1e-10)
-        # For Cholesky: det(A) = det(L)^2, so log(det(A)) = 2 * sum(log(diag(L)))
-        logdet = 2.0 * np.sum(np.log(np.diag(L)))
-        return logdet
+        if d > k:
+            # Dual form optimization: det(X'X + eI_d) = e^(d-k) * det(XX' + eI_k)
+            # This is much faster when d >> k (e.g. 1000 features, 50 selected)
+            
+            # Compute XX' (k x k) instead of X'X (d x d)
+            gram_matrix = selected_features @ selected_features.T
+            
+            # Add regularization to diagonal
+            gram_matrix.flat[::k+1] += regularization
+            
+            # Cholesky decomposition of small k x k matrix
+            L = np.linalg.cholesky(gram_matrix)
+            
+            # log(det(XX' + eI_k))
+            logdet_small = 2.0 * np.sum(np.log(np.diag(L)))
+            
+            # Add correction term: (d-k) * log(e)
+            correction = (d - k) * np.log(regularization)
+            
+            return logdet_small + correction
+        else:
+            # Standard Cholesky decomposition (3x faster than slogdet)
+            L = _compute_information_matrix_cholesky(selected_features, regularization=regularization)
+            # For Cholesky: det(A) = det(L)^2, so log(det(A)) = 2 * sum(log(diag(L)))
+            logdet = 2.0 * np.sum(np.log(np.diag(L)))
+            return logdet
+            
     except np.linalg.LinAlgError:
         return float('-inf')
 

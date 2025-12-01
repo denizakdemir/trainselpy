@@ -166,14 +166,10 @@ def portfolio_objectives(dbl_solution, data):
     # Average the diversity components
     div_obj = (asset_div_obj + sector_div_obj) / 2
     
-    # Add a small random noise to break ties and encourage exploration
-    # This can help find more diverse solutions
-    noise = np.random.normal(0, 0.01, 3)
-    
     return [
-        return_obj + noise[0], 
-        risk_obj + noise[1], 
-        div_obj + noise[2]
+        return_obj, 
+        risk_obj, 
+        div_obj
     ]
 
 def main():
@@ -203,11 +199,11 @@ def main():
     print("\nSetting control parameters...")
     control = train_sel_control(
         size="free",
-        niterations=60,       # Reduced for faster runtime
-        minitbefstop=30,      # Reduced for faster runtime
-        nEliteSaved=30,       # Number of elite solutions to save
-        nelite=100,           # Number of elite solutions
-        npop=300,             # Population size
+        niterations=200,      # Increased for better Pareto front
+        minitbefstop=100,     # Increased for better convergence
+        nEliteSaved=100,      # Save more elite solutions
+        nelite=300,           # Larger elite population
+        npop=1000,            # Larger population size
         mutprob=0.2,          # Mutation probability
         mutintensity=0.3,     # Mutation intensity
         crossprob=0.8,        # Crossover probability
@@ -217,26 +213,19 @@ def main():
         tempfin=0.1,          # Final temperature
         progress=True,        # Show progress
         solution_diversity=False,  # Allow similar solutions on Pareto front
-        nislands=4,           # Use 4 islands
-        niterIslands=40,      # Number of iterations per island
-        minitbefstopIslands=20, # Minimum iterations before stopping on each island
-        npopIslands=150,      # Population size per island
+        nislands=8,           # Use 8 islands
+        niterIslands=100,     # More iterations per island
+        minitbefstopIslands=50, # Minimum iterations before stopping on each island
+        npopIslands=300,      # Larger population size per island
         dynamicNelite=True    # Enable dynamic elite size adjustment
     )
     
     # Run the multi-objective optimization
-    print("\nRunning multi-objective portfolio optimization...")
+    print("\nRunning true multi-objective portfolio optimization...")
     start_time = time.time()
     
-    # Create multiple optimization runs with different objectives priorities
-    # This approach forces the algorithm to explore different areas of the Pareto front
-    print("\nRunning multiple optimizations with different objective priorities...")
-    
-    all_results = []
-    
-    # Original balanced run (all objectives equally weighted)
-    print("\n1. Running balanced optimization (all objectives equally weighted)...")
-    result1 = train_sel(
+    # Single run with multi-objective optimization
+    result = train_sel(
         data=ts_data,
         candidates=[list(range(n_assets))],  # Choose from all assets
         setsizes=[n_assets],                 # Weights for each asset
@@ -244,156 +233,10 @@ def main():
         stat=portfolio_objectives,           # Multi-objective fitness function
         n_stat=3,                            # Three objectives
         control=control,
-        verbose=False,
-        solution_diversity=False,            # Allow similar solutions (will combine later)
+        verbose=True,
+        solution_diversity=False,            # Allow multiple solutions with same indices (different weights)
         n_jobs=2                             # Use parallel processing
     )
-    all_results.append(result1)
-    
-    # Define a return-biased objective function (for high return portfolios)
-    def return_biased_objectives(dbl_solution, data):
-        base_objs = portfolio_objectives(dbl_solution, data)
-        # Boost return objective significantly
-        return [base_objs[0] * 3.0, base_objs[1] * 0.3, base_objs[2] * 0.3]
-    
-    # Run return-biased optimization
-    print("2. Running return-biased optimization...")
-    result2 = train_sel(
-        data=ts_data,
-        candidates=[list(range(n_assets))],
-        setsizes=[n_assets],
-        settypes=["DBL"],
-        stat=return_biased_objectives,       # Return-biased objective function
-        n_stat=3,
-        control=control,
-        verbose=False,
-        solution_diversity=False,
-        n_jobs=2
-    )
-    all_results.append(result2)
-    
-    # Define a risk-biased objective function (for low risk portfolios)
-    def risk_biased_objectives(dbl_solution, data):
-        base_objs = portfolio_objectives(dbl_solution, data)
-        # Boost risk objective significantly
-        return [base_objs[0] * 0.3, base_objs[1] * 3.0, base_objs[2] * 0.3]
-    
-    # Run risk-biased optimization
-    print("3. Running risk-biased optimization...")
-    result3 = train_sel(
-        data=ts_data,
-        candidates=[list(range(n_assets))],
-        setsizes=[n_assets],
-        settypes=["DBL"],
-        stat=risk_biased_objectives,         # Risk-biased objective function
-        n_stat=3,
-        control=control,
-        verbose=False,
-        solution_diversity=False,
-        n_jobs=2
-    )
-    all_results.append(result3)
-    
-    # Define a diversity-biased objective function
-    def diversity_biased_objectives(dbl_solution, data):
-        base_objs = portfolio_objectives(dbl_solution, data)
-        # Boost diversity objective significantly
-        return [base_objs[0] * 0.3, base_objs[1] * 0.3, base_objs[2] * 3.0]
-    
-    # Run diversity-biased optimization
-    print("4. Running diversity-biased optimization...")
-    result4 = train_sel(
-        data=ts_data,
-        candidates=[list(range(n_assets))],
-        setsizes=[n_assets],
-        settypes=["DBL"],
-        stat=diversity_biased_objectives,    # Diversity-biased objective function
-        n_stat=3,
-        control=control,
-        verbose=False,
-        solution_diversity=False,
-        n_jobs=2
-    )
-    all_results.append(result4)
-    
-    # Add extreme optimizations for more variety
-    
-    # Extreme return focus
-    def extreme_return_objectives(dbl_solution, data):
-        base_objs = portfolio_objectives(dbl_solution, data)
-        return [base_objs[0] * 5.0, base_objs[1] * 0.1, base_objs[2] * 0.1]
-    
-    print("5. Running extreme return-focused optimization...")
-    result5 = train_sel(
-        data=ts_data,
-        candidates=[list(range(n_assets))],
-        setsizes=[n_assets],
-        settypes=["DBL"],
-        stat=extreme_return_objectives,
-        n_stat=3,
-        control=control,
-        verbose=False,
-        solution_diversity=False,
-        n_jobs=2
-    )
-    all_results.append(result5)
-    
-    # Return-risk balanced (for efficient frontier)
-    def return_risk_balanced(dbl_solution, data):
-        base_objs = portfolio_objectives(dbl_solution, data)
-        return [base_objs[0] * 2.0, base_objs[1] * 2.0, base_objs[2] * 0.2]
-    
-    print("6. Running return-risk balanced optimization...")
-    result6 = train_sel(
-        data=ts_data,
-        candidates=[list(range(n_assets))],
-        setsizes=[n_assets],
-        settypes=["DBL"],
-        stat=return_risk_balanced,
-        n_stat=3,
-        control=control,
-        verbose=False,
-        solution_diversity=False,
-        n_jobs=2
-    )
-    all_results.append(result6)
-    
-    # Combine results and find the overall Pareto front
-    print("\nCombining results to find the overall Pareto front...")
-    
-    # Combine all pareto solutions
-    combined_solutions = []
-    for result in all_results:
-        if result.pareto_solutions:
-            combined_solutions.extend(result.pareto_solutions)
-    
-    # If we have solutions, find the overall Pareto front
-    if combined_solutions:
-        # Extract multi-objective fitness values
-        fitness_values = [sol["multi_fitness"] for sol in combined_solutions]
-        
-        # Find non-dominated solutions
-        is_dominated = [False] * len(combined_solutions)
-        for i in range(len(combined_solutions)):
-            for j in range(len(combined_solutions)):
-                if i != j:
-                    fi = fitness_values[i]
-                    fj = fitness_values[j]
-                    if all(fj[k] >= fi[k] for k in range(3)) and any(fj[k] > fi[k] for k in range(3)):
-                        is_dominated[i] = True
-                        break
-        
-        # Filter non-dominated solutions
-        pareto_solutions = [sol for i, sol in enumerate(combined_solutions) if not is_dominated[i]]
-        pareto_front = [sol["multi_fitness"] for sol in pareto_solutions]
-        
-        # Update the first result with the combined Pareto front
-        result1.pareto_solutions = pareto_solutions
-        result1.pareto_front = pareto_front
-        print(f"Found {len(pareto_front)} solutions on the combined Pareto front.")
-    
-    # Use the first result (with combined Pareto front) as the main result
-    result = result1
     
     runtime = time.time() - start_time
     print(f"\nOptimization completed in {runtime:.2f} seconds")
