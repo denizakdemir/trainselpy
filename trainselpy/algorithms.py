@@ -514,6 +514,255 @@ def generate_from_surrogate(
     return generated
 
 
+def _initialize_nsga3(n_stat: int, pop_size: int, control: Dict[str, Any]) -> Tuple[bool, Optional[List[List[float]]]]:
+    """
+    Initialize NSGA-III reference points.
+    """
+    use_nsga3 = control.get("use_nsga3", n_stat > 2)
+    reference_points = None
+    
+    if use_nsga3 and n_stat > 1:
+        # Determine p (divisions) to match pop_size
+        p = 1
+        while True:
+            n_ref = math.comb(n_stat + p - 1, p)
+            if n_ref >= pop_size:
+                break
+            p += 1
+            if p > 20: # Safety break
+                break
+        
+        # If n_ref is much larger than pop_size, maybe reduce p?
+        if p > 1 and math.comb(n_stat + (p-1) - 1, p-1) > pop_size * 0.8:
+            p -= 1
+            
+        reference_points = generate_reference_points(n_stat, p)
+        if control.get("progress", True):
+            print(f"Initialized NSGA-III with {len(reference_points)} reference points (p={p})")
+            
+    return use_nsga3, reference_points
+
+
+def _initialize_surrogate(
+    control: Dict[str, Any], 
+    candidates: List[List[int]], 
+    settypes: List[str]
+) -> Tuple[Optional[SurrogateModel], List[Solution]]:
+    """
+    Initialize the surrogate model.
+    """
+    use_surrogate = control.get("use_surrogate", False)
+    surrogate_model = None
+    surrogate_archive = []
+    
+    if use_surrogate:
+        try:
+            surrogate_model = SurrogateModel(candidates, settypes, model_type="gp")
+            if control.get("progress", True):
+                print("Initialized Surrogate Model")
+        except ImportError:
+            print("Warning: scikit-learn not found, disabling surrogate optimization")
+            
+    return surrogate_model, surrogate_archive
+
+
+def _initialize_cma_es(
+    settypes: List[str], 
+    population: List[Solution], 
+    control: Dict[str, Any]
+) -> Optional[CMAESOptimizer]:
+    """
+    Initialize CMA-ES optimizer if double variables are present.
+    """
+    cma_optimizer = None
+    has_dbl = any(st == "DBL" for st in settypes)
+    
+    if has_dbl and population:
+        # Create initial mean from the best solution
+        best_solution = max(population, key=lambda x: x.fitness)
+        initial_mean = flatten_dbl_values(best_solution.dbl_values)
+        # Initialize CMA-ES
+        cma_optimizer = CMAESOptimizer(mean=initial_mean, sigma=0.2)
+        if control.get("progress", True):
+            print("Initialized CMA-ES for continuous variables")
+            
+    return cma_optimizer
+
+
+def _generate_surrogate_offspring(
+    surrogate_model: SurrogateModel,
+    candidates: List[List[int]],
+    setsizes: List[int],
+    settypes: List[str],
+    pop_size: int,
+    control: Dict[str, Any]
+) -> List[Solution]:
+    """
+    Generate offspring using surrogate optimization.
+    """
+    surrogate_generation_prob = control.get("surrogate_generation_prob", 0.0)
+    
+    if (surrogate_model and surrogate_model.is_fitted and 
+        random.random() < surrogate_generation_prob):
+        # Generate some offspring using surrogate optimization
+        n_gen = max(1, int(pop_size * 0.1)) # Generate 10% of population
+        return generate_from_surrogate(
+            surrogate_model, candidates, setsizes, settypes, n_solutions=n_gen
+        )
+    return []
+
+
+def _prescreen_offspring(
+    surrogate_model: SurrogateModel,
+    offspring: List[Solution],
+    population: List[Solution],
+    candidates: List[List[int]],
+    settypes: List[str],
+    control: Dict[str, Any],
+    gen: int
+) -> List[Solution]:
+    """
+    Prescreen offspring using the surrogate model.
+    """
+    use_surrogate = control.get("use_surrogate", False)
+    surrogate_start_gen = control.get("surrogate_start_gen", 10)
+    surrogate_prescreen_factor = control.get("surrogate_prescreen_factor", 5)
+    
+    if (use_surrogate and gen >= surrogate_start_gen and surrogate_model and surrogate_model.is_fitted):
+        # Generate more offspring for pre-screening
+        n_extra = int((surrogate_prescreen_factor - 1) * len(offspring))
+        if n_extra > 0:
+            # Generate extra offspring
+            extra_offspring = []
+            
+            # Extract mutation/crossover params
+            mut_prob = control.get("mutprob", 0.01)
+            mut_intensity = control.get("mutintensity", 0.1)
+            cross_prob = control.get("crossprob", 0.5)
+            cross_intensity = control.get("crossintensity", 0.75)
+            
+            while len(extra_offspring) < n_extra:
+                # Quick selection
+                p = random.sample(population, 2)
+                # Crossover
+                children = crossover(p, cross_prob, cross_intensity, settypes, candidates)
+                mutation(children, candidates, settypes, mut_prob, mut_intensity)
+                extra_offspring.extend(children)
+            
+            # Combine all potential offspring
+            all_candidates = offspring + extra_offspring[:n_extra]
+            
+            # Predict fitness
+            means, stds = surrogate_model.predict(all_candidates)
+            
+            # UCB Selection (Upper Confidence Bound)
+            kappa = 2.0
+            ucb_scores = means + kappa * stds
+            
+            # Select top len(offspring)
+            n_keep = len(offspring)
+            top_indices = np.argsort(ucb_scores)[-n_keep:]
+            
+            # Update offspring list
+            return [all_candidates[i] for i in top_indices]
+            
+    return offspring
+
+
+def _generate_cma_offspring(
+    cma_optimizer: Optional[CMAESOptimizer],
+    parents: List[Solution],
+    stat_func: Callable,
+    data: Dict[str, Any],
+    n_stat: int,
+    is_parallel: bool,
+    control: Dict[str, Any],
+    fitness_cache: Dict,
+    surrogate_model: Optional[SurrogateModel]
+) -> Tuple[List[Solution], Optional[List[np.ndarray]]]:
+    """
+    Generate and evaluate offspring using CMA-ES.
+    """
+    cma_offspring = []
+    cma_candidates = None
+    
+    if cma_optimizer:
+        # Generate candidates from CMA-ES
+        cma_candidates = cma_optimizer.ask()
+        
+        # Create offspring solutions
+        for cand_vec in cma_candidates:
+            # Create a new solution
+            # For integer parts, copy from a random parent to maintain diversity
+            parent = random.choice(parents)
+            new_sol = parent.copy()
+            
+            # Update double values from CMA candidate
+            # Clip to [0, 1] as per problem constraints
+            cand_vec = np.clip(cand_vec, 0, 1)
+            new_sol.dbl_values = unflatten_dbl_values(cand_vec, new_sol.dbl_values)
+            
+            cma_offspring.append(new_sol)
+        
+        # Evaluate CMA offspring
+        evaluate_fitness(cma_offspring, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
+        
+    return cma_offspring, cma_candidates
+
+
+def _update_cma_es(
+    cma_optimizer: Optional[CMAESOptimizer],
+    cma_candidates: Optional[List[np.ndarray]],
+    cma_offspring: List[Solution]
+) -> None:
+    """
+    Update CMA-ES optimizer with evaluated offspring.
+    """
+    if cma_optimizer and cma_candidates is not None and cma_offspring:
+        # Use scalar fitness (sum of objectives for MO)
+        cma_fitnesses = [sol.fitness for sol in cma_offspring]
+        cma_optimizer.tell(cma_candidates, cma_fitnesses)
+
+
+def _select_next_generation(
+    combined_pop: List[Solution],
+    pop_size: int,
+    n_stat: int,
+    use_nsga3: bool,
+    reference_points: Optional[List[List[float]]]
+) -> List[Solution]:
+    """
+    Select the next generation of solutions.
+    """
+    if n_stat > 1:
+        if use_nsga3 and reference_points is not None:
+            # Use NSGA-III selection
+            return nsga3_selection(combined_pop, pop_size, reference_points)
+        else:
+            # Multi-objective: use Pareto ranking (NSGA-II)
+            fronts = fast_non_dominated_sort(combined_pop)
+            population = []
+            for front in fronts:
+                if len(population) + len(front) <= pop_size:
+                    population.extend(front)
+                else:
+                    # Use crowding distance to select most diverse
+                    crowding_distances = calculate_crowding_distance(front)
+                    sorted_indices = sorted(range(len(front)),
+                                          key=lambda i: crowding_distances[i],
+                                          reverse=True)
+                    
+                    n_needed = pop_size - len(population)
+                    for i in range(n_needed):
+                        population.append(front[sorted_indices[i]])
+                    break
+            return population
+    else:
+        # Single-objective: sort by fitness
+        combined_pop.sort(key=lambda x: x.fitness, reverse=True)
+        return combined_pop[:pop_size]
+
+
 def genetic_algorithm(
     data: Dict[str, Any],
     candidates: List[List[int]],
@@ -591,30 +840,7 @@ def genetic_algorithm(
     surrogate_generation_prob = control.get("surrogate_generation_prob", 0.0)
     
     # NSGA-III Setup
-    use_nsga3 = control.get("use_nsga3", n_stat > 2)
-    reference_points = None
-    if use_nsga3 and n_stat > 1:
-        # Determine p (divisions) to match pop_size
-        # N = comb(M + p - 1, p)
-        # We want N >= pop_size (or close to it)
-        p = 1
-        while True:
-            n_ref = math.comb(n_stat + p - 1, p)
-            if n_ref >= pop_size:
-                break
-            p += 1
-            if p > 20: # Safety break
-                break
-        
-        # If n_ref is much larger than pop_size, maybe reduce p?
-        # But NSGA-III works best with structured points.
-        # Let's use p that gives at least pop_size, or slightly less if close.
-        if p > 1 and math.comb(n_stat + (p-1) - 1, p-1) > pop_size * 0.8:
-            p -= 1
-            
-        reference_points = generate_reference_points(n_stat, p)
-        if show_progress:
-            print(f"Initialized NSGA-III with {len(reference_points)} reference points (p={p})")
+    use_nsga3, reference_points = _initialize_nsga3(n_stat, pop_size, control)
 
     # Initialize population
     population = initialize_population(candidates, setsizes, settypes, pop_size)
@@ -633,19 +859,7 @@ def genetic_algorithm(
     fitness_cache = {}
 
     # Surrogate initialization
-    surrogate_model = None
-    surrogate_archive = []
-    if use_surrogate:
-        try:
-            surrogate_model = SurrogateModel(candidates, settypes, model_type="gp")
-            # Add initial population to archive (will be done after evaluation?)
-            # Wait, we need fitnesses for archive.
-            # So we initialize model here, but add to archive AFTER evaluation.
-            if show_progress:
-                print("Initialized Surrogate Model")
-        except ImportError:
-            print("Warning: scikit-learn not found, disabling surrogate optimization")
-            use_surrogate = False
+    surrogate_model, surrogate_archive = _initialize_surrogate(control, candidates, settypes)
 
     # Evaluate initial population
     evaluate_fitness(population, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
@@ -666,24 +880,12 @@ def genetic_algorithm(
         # So we can add to archive.
         surrogate_archive.extend([s.copy() for s in population])
     
-
-    
     if show_progress:
         print(f"Starting GA with population size {pop_size}")
         print(f"Initial best fitness: {best_solution.fitness}")
     
     # Initialize CMA-ES if there are double variables
-    cma_optimizer = None
-    has_dbl = any(st == "DBL" for st in settypes)
-    if has_dbl and population:
-        # Create initial mean from the best solution
-        initial_mean = flatten_dbl_values(best_solution.dbl_values)
-        # Initialize CMA-ES
-        # Use a smaller sigma for refinement, or larger for exploration? 
-        # Defaulting to 0.2 (assuming [0,1] range)
-        cma_optimizer = CMAESOptimizer(mean=initial_mean, sigma=0.2)
-        if show_progress:
-            print("Initialized CMA-ES for continuous variables")
+    cma_optimizer = _initialize_cma_es(settypes, population, control)
 
     # Main GA loop
     for gen in range(n_iterations):
@@ -697,116 +899,34 @@ def genetic_algorithm(
         mutation(offspring, candidates, settypes, mut_prob, mut_intensity)
 
         # --- Surrogate Generation ---
-        if use_surrogate and surrogate_model and surrogate_model.is_fitted and random.random() < surrogate_generation_prob:
-            # Generate some offspring using surrogate optimization
-            n_gen = max(1, int(pop_size * 0.1)) # Generate 10% of population
-            surrogate_offspring = generate_from_surrogate(
-                surrogate_model, candidates, setsizes, settypes, n_solutions=n_gen
-            )
-            offspring.extend(surrogate_offspring)
+        surrogate_offspring = _generate_surrogate_offspring(
+            surrogate_model, candidates, setsizes, settypes, pop_size, control
+        )
+        offspring.extend(surrogate_offspring)
 
         # --- Surrogate Pre-screening ---
-        if use_surrogate and gen >= surrogate_start_gen and surrogate_model.is_fitted:
-            # Generate more offspring for pre-screening
-            # We already have 'offspring' (size ~pop_size)
-            # We need (factor - 1) * pop_size more
-            n_extra = int((surrogate_prescreen_factor - 1) * len(offspring))
-            if n_extra > 0:
-                # Generate extra parents and offspring
-                extra_parents = selection(population, n_elite=0, tournament_size=3) # Just tournament
-                # We need enough parents for n_extra offspring. 
-                # selection returns pop_size parents.
-                # We can just reuse 'parents' or sample more.
-                # Let's just loop crossover/mutation
-                extra_offspring = []
-                while len(extra_offspring) < n_extra:
-                    # Quick selection
-                    p = random.sample(population, 2)
-                    # Crossover
-                    children = crossover(p, cross_prob, cross_intensity, settypes, candidates)
-                    mutation(children, candidates, settypes, mut_prob, mut_intensity)
-                    extra_offspring.extend(children)
-                
-                # Combine all potential offspring
-                all_candidates = offspring + extra_offspring[:n_extra]
-                
-                # Predict fitness
-                means, stds = surrogate_model.predict(all_candidates)
-                
-                # UCB Selection (Upper Confidence Bound)
-                kappa = 2.0
-                ucb_scores = means + kappa * stds
-                
-                # Select top len(offspring)
-                n_keep = len(offspring)
-                top_indices = np.argsort(ucb_scores)[-n_keep:]
-                
-                # Update offspring list
-                offspring = [all_candidates[i] for i in top_indices]
+        offspring = _prescreen_offspring(
+            surrogate_model, offspring, population, candidates, settypes, control, gen
+        )
 
         # Evaluate fitness for the offspring (using cache)
         # If use_surrogate_objective is True, this will use the surrogate
         evaluate_fitness(offspring, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
 
         # --- CMA-ES Injection ---
-        cma_offspring = []
-        if cma_optimizer:
-            # Generate candidates from CMA-ES
-            cma_candidates = cma_optimizer.ask()
-            
-            # Create offspring solutions
-            for cand_vec in cma_candidates:
-                # Create a new solution
-                # For integer parts, copy from a random parent (or best)
-                # Here we pick a random parent to maintain diversity
-                parent = random.choice(parents)
-                new_sol = parent.copy()
-                
-                # Update double values from CMA candidate
-                # Clip to [0, 1] as per problem constraints
-                cand_vec = np.clip(cand_vec, 0, 1)
-                new_sol.dbl_values = unflatten_dbl_values(cand_vec, new_sol.dbl_values)
-                
-                cma_offspring.append(new_sol)
-            
-            # Evaluate CMA offspring
-            evaluate_fitness(cma_offspring, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
-            
-            # Update CMA-ES
-            # Use scalar fitness (sum of objectives for MO)
-            cma_fitnesses = [sol.fitness for sol in cma_offspring]
-            cma_optimizer.tell(cma_candidates, cma_fitnesses)
+        cma_offspring, cma_candidates = _generate_cma_offspring(
+            cma_optimizer, parents, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model
+        )
+        
+        # Update CMA-ES
+        _update_cma_es(cma_optimizer, cma_candidates, cma_offspring)
             
         # Implement elitism: combine population, offspring, and CMA offspring
         # This ensures best solutions are always preserved
         combined = population + offspring + cma_offspring
 
         # Select the best pop_size individuals from combined population
-        if n_stat > 1:
-            if use_nsga3 and reference_points is not None:
-                # Use NSGA-III selection
-                population = nsga3_selection(combined, pop_size, reference_points)
-            else:
-                # Multi-objective: use Pareto ranking (NSGA-II)
-                fronts = fast_non_dominated_sort(combined)
-                population = []
-                for front in fronts:
-                    if len(population) + len(front) <= pop_size:
-                        population.extend(front)
-                    else:
-                        # Use crowding distance to select most diverse
-                        crowding_distances = calculate_crowding_distance(front)
-                        sorted_indices = sorted(range(len(front)),
-                                              key=lambda i: crowding_distances[i],
-                                              reverse=True)
-                        n_needed = pop_size - len(population)
-                        for i in range(n_needed):
-                            population.append(front[sorted_indices[i]])
-                        break
-        else:
-            # Single-objective: select best by fitness
-            combined_sorted = sorted(combined, key=lambda x: x.fitness, reverse=True)
-            population = combined_sorted[:pop_size]
+        population = _select_next_generation(combined, pop_size, n_stat, use_nsga3, reference_points)
 
         # --- Apply simulated annealing (SA) on elite solutions periodically ---
         # Changed to apply every sann_frequency generations instead of every generation for efficiency
@@ -948,54 +1068,25 @@ def genetic_algorithm(
         }
     else:
         # Multi-objective result processing
-        population = sorted(population, key=lambda x: x.fitness, reverse=True)
-        pareto_front = []
-        pareto_solutions = []
+        # Use fast_non_dominated_sort to get the true Pareto front
+        fronts = fast_non_dominated_sort(population)
+        pareto_solutions = fronts[0] if fronts else []  # First front is the Pareto front
         
-        for sol in population:
-            is_dominated = False
-            for pf_sol in pareto_solutions:
-                if all(pf_sol.multi_fitness[i] >= sol.multi_fitness[i] for i in range(n_stat)) and \
-                   any(pf_sol.multi_fitness[i] > sol.multi_fitness[i] for i in range(n_stat)):
-                    is_dominated = True
-                    break
+        # Apply solution diversity filtering if enabled
+        if solution_diversity and pareto_solutions:
+            unique_pareto = []
+            seen_hashes = set()
             
-            if not is_dominated:
-                # First, remove any solutions that this one dominates
-                new_pareto = []
-                for pf_sol in pareto_solutions:
-                    if not (all(sol.multi_fitness[i] >= pf_sol.multi_fitness[i] for i in range(n_stat)) and \
-                            any(sol.multi_fitness[i] > pf_sol.multi_fitness[i] for i in range(n_stat))):
-                        new_pareto.append(pf_sol)
-                pareto_solutions = new_pareto
-                
-                # Then check for duplicate solutions if solution_diversity is enabled
-                if solution_diversity:
-                    # Check if this solution is unique based on the int_values (selected indices)
-                    is_duplicate = False
-                    for pf_sol in pareto_solutions:
-                        if len(sol.int_values) == len(pf_sol.int_values):
-                            all_match = True
-                            for i in range(len(sol.int_values)):
-                                if set(sol.int_values[i]) != set(pf_sol.int_values[i]):
-                                    all_match = False
-                                    break
-                            if all_match:
-                                is_duplicate = True
-                                # If it's a duplicate but has better fitness, replace the existing one
-                                if sol.fitness > pf_sol.fitness:
-                                    idx = pareto_solutions.index(pf_sol)
-                                    pareto_solutions[idx] = sol
-                                    pareto_front[idx] = sol.multi_fitness
-                                break
-                    
-                    if not is_duplicate:
-                        pareto_solutions.append(sol)
-                        pareto_front.append(sol.multi_fitness)
-                else:
-                    # Add all non-dominated solutions (may include duplicates)
-                    pareto_solutions.append(sol)
-                    pareto_front.append(sol.multi_fitness)
+            for sol in pareto_solutions:
+                sol_hash = sol.get_hash()
+                if sol_hash not in seen_hashes:
+                    unique_pareto.append(sol)
+                    seen_hashes.add(sol_hash)
+            
+            pareto_solutions = unique_pareto
+        
+        # Extract fitness values for the Pareto front
+        pareto_front = [sol.multi_fitness for sol in pareto_solutions]
         
         result = {
             "selected_indices": best_solution.int_values,
@@ -1146,25 +1237,27 @@ def island_model_ga(
             if not is_dominated:
                 # Check for duplicate solutions (if solution_diversity is enabled)
                 if solution_diversity:
-                    # Check if this solution is unique based on selected indices
+                    # Check if this solution is unique based on hash (includes int and dbl values)
+                    # We need to compute hash manually since these are dicts, not Solution objects
+                    sol_int_tuple = tuple(tuple(iv) for iv in sol["selected_indices"])
+                    sol_dbl_tuple = tuple(tuple(round(v, 8) for v in dv) for dv in sol["selected_values"])
+                    sol_hash = hash((sol_int_tuple, sol_dbl_tuple))
+                    
                     is_duplicate = False
                     for existing_sol in pareto_solutions:
-                        # Compare integer solutions (selected indices)
-                        if len(sol["selected_indices"]) == len(existing_sol["selected_indices"]):
-                            all_match = True
-                            for set_idx in range(len(sol["selected_indices"])):
-                                if set(sol["selected_indices"][set_idx]) != set(existing_sol["selected_indices"][set_idx]):
-                                    all_match = False
-                                    break
-                            if all_match:
-                                is_duplicate = True
-                                # Keep the solution with better sum of objectives
-                                if sum(sol["multi_fitness"]) > sum(existing_sol["multi_fitness"]):
-                                    # Replace the existing solution with this one
-                                    idx = pareto_solutions.index(existing_sol)
-                                    pareto_solutions[idx] = sol
-                                    pareto_front[idx] = sol["multi_fitness"]
-                                break
+                        existing_int_tuple = tuple(tuple(iv) for iv in existing_sol["selected_indices"])
+                        existing_dbl_tuple = tuple(tuple(round(v, 8) for v in dv) for dv in existing_sol["selected_values"])
+                        existing_hash = hash((existing_int_tuple, existing_dbl_tuple))
+                        
+                        if sol_hash == existing_hash:
+                            is_duplicate = True
+                            # Keep the solution with better sum of objectives
+                            if sum(sol["multi_fitness"]) > sum(existing_sol["multi_fitness"]):
+                                # Replace the existing solution with this one
+                                idx = pareto_solutions.index(existing_sol)
+                                pareto_solutions[idx] = sol
+                                pareto_front[idx] = sol["multi_fitness"]
+                            break
                     
                     if not is_duplicate:
                         pareto_solutions.append(sol)

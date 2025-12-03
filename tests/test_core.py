@@ -46,29 +46,29 @@ class TestCore(unittest.TestCase):
         data = make_data(M=self.M)
         self.assertIn('G', data)
         self.assertIn('R', data)
-        self.assertIn('lambda', data)
-        self.assertEqual(data['lambda'], 1)
+        self.assertIn('lambda_val', data)
+        self.assertEqual(data['lambda_val'], 1)
         
         # Test with K only
         data = make_data(K=self.K)
         self.assertIn('G', data)
         self.assertIn('R', data)
-        self.assertIn('lambda', data)
-        self.assertEqual(data['lambda'], 1)
+        self.assertIn('lambda_val', data)
+        self.assertEqual(data['lambda_val'], 1)
         
         # Test with both M and K
         data = make_data(M=self.M, K=self.K)
         self.assertIn('G', data)
         self.assertIn('R', data)
-        self.assertIn('lambda', data)
-        self.assertEqual(data['lambda'], 1)
+        self.assertIn('lambda_val', data)
+        self.assertEqual(data['lambda_val'], 1)
         
         # Test with lambda
         data = make_data(M=self.M, lambda_val=2)
         self.assertIn('G', data)
         self.assertIn('R', data)
-        self.assertIn('lambda', data)
-        self.assertEqual(data['lambda'], 2)
+        self.assertIn('lambda_val', data)
+        self.assertEqual(data['lambda_val'], 2)
     
     def test_set_control_default(self):
         """Test the set_control_default function."""
