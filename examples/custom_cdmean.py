@@ -22,7 +22,7 @@ def custom_cdmean(soln: List[int], data: Dict[str, Any]) -> float:
         CDMean value
     """
     G = data["G"]
-    lambda_val = data["lambda"]
+    lambda_val = data.get("lambda_val", data.get("lambda", 1))
     
     # Get G matrices - handle both DataFrame and ndarray
     if hasattr(G, 'iloc'):

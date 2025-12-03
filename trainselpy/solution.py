@@ -38,9 +38,12 @@ class Solution:
         Uses only int_values for hashing as dbl_values may have precision issues.
         """
         if self._hash is None:
-            # Create hash from integer values
-            hash_tuple = tuple(tuple(iv) for iv in self.int_values)
-            self._hash = hash(hash_tuple)
+            # Create hash from integer and double values
+            int_tuple = tuple(tuple(iv) for iv in self.int_values)
+            # Round doubles to avoid precision issues, but ensure mutated values (which change significantly) are different
+            # Using 8 decimals should be safe for caching within a run
+            dbl_tuple = tuple(tuple(round(v, 8) for v in dv) for dv in self.dbl_values)
+            self._hash = hash((int_tuple, dbl_tuple))
         return self._hash
 
     def __lt__(self, other):

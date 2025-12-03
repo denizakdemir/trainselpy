@@ -33,19 +33,28 @@ def generate_synthetic_data(n_compounds=50, n_features=5, n_targets=2, random_st
     # Generate molecular features
     compound_features = np.random.normal(0, 1, size=(n_compounds, n_features))
     
-    # Generate target activities based on features (with some noise)
+    # Generate compound costs based on complexity
+    complexity = np.sum(np.abs(compound_features), axis=1)
+    compound_costs = 100 + 50 * (complexity - np.min(complexity)) / (np.max(complexity) - np.min(complexity))
+    
+    # Generate target activities with STRONG correlation to cost (creating clear trade-off)
+    # More expensive (complex) compounds have significantly higher activities
     target_activities = np.zeros((n_compounds, n_targets))
     
     for i in range(n_targets):
         weights = np.random.normal(0, 1, size=n_features)
-        target_activities[:, i] = np.dot(compound_features, weights) + np.random.normal(0, 0.5, size=n_compounds)
+        base_activity = np.dot(compound_features, weights)
+        
+        # Add a strong positive correlation with complexity (and thus cost)
+        # This creates a clear trade-off: expensive compounds have much higher activity potential
+        normalized_complexity = (complexity - np.min(complexity)) / (np.max(complexity) - np.min(complexity))
+        activity_boost = normalized_complexity * 4.0  # Strong boost based on complexity
+        
+        target_activities[:, i] = base_activity + activity_boost + np.random.normal(0, 0.2, size=n_compounds)
+        
         # Normalize to 0-1 range
         target_activities[:, i] = (target_activities[:, i] - np.min(target_activities[:, i])) / \
                                  (np.max(target_activities[:, i]) - np.min(target_activities[:, i]))
-    
-    # Generate compound costs
-    complexity = np.sum(np.abs(compound_features), axis=1)
-    compound_costs = 100 + 50 * (complexity - np.min(complexity)) / (np.max(complexity) - np.min(complexity))
     
     return compound_features, target_activities, compound_costs
 
@@ -105,28 +114,24 @@ def moo_fitness_function(int_solution, dbl_solution, data):
     
     dose_adjusted_activities = selected_activities * dose_effects[:, np.newaxis]
     
-    # Calculate diversity of responses
-    activity_diversity = np.sum(np.std(dose_adjusted_activities, axis=0))
+    # Calculate information gain more directly
+    # Higher activities = more information, diversity also matters
     
-    # Calculate coverage of activity space
-    coverage = np.mean(np.max(dose_adjusted_activities, axis=0))
+    # Mean activity across targets (higher is better)
+    mean_activity = np.mean(dose_adjusted_activities)
     
-    # Calculate dose optimization score with stronger penalty for suboptimal doses
-    dose_optimization_score = 0
-    for i, compound_idx in enumerate(selected_compounds):
-        # Calculate "optimal" dose for this compound based on its features
-        feature_sum = np.sum(np.abs(compound_features[compound_idx]))
-        optimal_dose = 0.3 + 0.6 * (feature_sum / 5)  # Optimal dose varies by compound
-        
-        # Add score based on how close the selected dose is to the optimal dose
-        # Using a quadratic penalty for distance from optimal
-        distance = abs(dosage_levels[i] - optimal_dose)
-        dose_optimization_score += 1.0 - min(distance * 4, 1.0)**2
+    # Diversity of responses across targets (higher is better)
+    activity_diversity = np.std(dose_adjusted_activities)
     
-    dose_optimization_score /= len(selected_compounds)  # Normalize
+    # Coverage: maximum activity achieved for each target
+    max_coverage = np.mean(np.max(dose_adjusted_activities, axis=0))
     
-    # Information gain combines diversity, coverage, and dose optimality
-    information_gain = activity_diversity * coverage * len(selected_compounds) * (1.0 + dose_optimization_score)
+    # Dose optimization: penalize extreme doses (0 or 1) slightly
+    dose_quality = np.mean([1.0 - abs(d - 0.5) * 0.5 for d in dosage_levels])
+    
+    # Information gain: combination of activity level, diversity, and coverage
+    # Scale up to make values more meaningful
+    information_gain = (mean_activity * 10.0 + activity_diversity * 5.0 + max_coverage * 5.0) * dose_quality
     
     # Return both objectives
     return [information_gain, -total_cost]
@@ -184,7 +189,7 @@ def main():
             n_compounds_to_select   # One dosage per selected compound
         ],
         settypes=[
-            "OS",  # Unordered set for compounds
+            "UOS",  # Unordered set for compounds
             "DBL"   # Continuous values for dosages (0-1)
         ],
         stat=moo_fitness_function,
