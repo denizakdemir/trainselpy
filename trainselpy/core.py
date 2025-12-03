@@ -503,7 +503,7 @@ def train_sel(
     if parallelizable and n_stat > 1 and nislands == 1:
         raise ValueError("Parallelization for multi-objective optimization is only supported when nislands > 1")
     
-    if ntotal is not None and parallelizable:
+    if ntotal is not None and ntotal > 0 and parallelizable:
         raise ValueError("ntotal is not supported when working in parallel")
     
     # Run the optimization.
