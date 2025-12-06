@@ -14,10 +14,11 @@ from sklearn.linear_model import Ridge
 
 # Import TrainSelPy functions
 from trainselpy import (
-    make_data, 
-    train_sel, 
+    make_data,
+    train_sel,
     set_control_default,
-    calculate_relationship_matrix
+    calculate_relationship_matrix,
+    cdmean_opt,
 )
 
 def simulate_breeding_population(n_individuals=200, n_markers=500, h2=0.5):
@@ -72,8 +73,12 @@ def simulate_breeding_population(n_individuals=200, n_markers=500, h2=0.5):
 
 def prediction_accuracy_stat(training_indices, data):
     """
-    Custom statistic function to evaluate the prediction accuracy of a model
+    Helper function to evaluate the prediction accuracy of a model
     trained on the selected individuals.
+
+    Note: In this example, TrainSelPy optimizes the CDMean criterion
+    via ``cdmean_opt``. Prediction accuracy is used only for
+    post-hoc evaluation of the selected training sets.
     
     Parameters
     ----------
@@ -156,6 +161,8 @@ def main():
     training_sizes = [20, 40, 60, 80]
     random_accuracies = []
     optimized_accuracies = []
+    random_cdmeans = []
+    optimized_cdmeans = []
     
     for size in training_sizes:
         print(f"\nTraining set size: {size}")
@@ -163,40 +170,53 @@ def main():
         # Random selection
         print("  Random selection:")
         random_accuracy_sum = 0
+        random_cdmean_sum = 0
         n_repeats = 5
         
         for i in range(n_repeats):
             random_indices = np.random.choice(candidate_indices, size=size, replace=False)
             accuracy = prediction_accuracy_stat(random_indices, ts_data)
+            cd_val = cdmean_opt(random_indices.tolist(), ts_data)
             random_accuracy_sum += accuracy
-            print(f"    Repeat {i+1}: Accuracy = {accuracy:.4f}")
+            random_cdmean_sum += cd_val
+            print(f"    Repeat {i+1}: Accuracy = {accuracy:.4f}, CDMean = {cd_val:.4f}")
         
         avg_random_accuracy = random_accuracy_sum / n_repeats
+        avg_random_cdmean = random_cdmean_sum / n_repeats
         random_accuracies.append(avg_random_accuracy)
+        random_cdmeans.append(avg_random_cdmean)
         print(f"  Average random selection accuracy: {avg_random_accuracy:.4f}")
+        print(f"  Average random selection CDMean:   {avg_random_cdmean:.4f}")
         
-        # Optimized selection
+        # Optimized selection (CDMean-optimized)
         print("  Optimized selection:")
         result = train_sel(
             data=ts_data,
             candidates=[candidate_indices.tolist()],
             setsizes=[size],
             settypes=["UOS"],
-            stat=prediction_accuracy_stat,
+            stat=cdmean_opt,
             control=control,
             verbose=False
         )
-        
-        optimized_accuracy = result.fitness
+
+        optimized_indices = result.selected_indices[0]
+        optimized_cdmean = result.fitness
+        optimized_accuracy = prediction_accuracy_stat(optimized_indices, ts_data)
+
         optimized_accuracies.append(optimized_accuracy)
+        optimized_cdmeans.append(optimized_cdmean)
+
+        print(f"  Optimized selection CDMean:   {optimized_cdmean:.4f}")
         print(f"  Optimized selection accuracy: {optimized_accuracy:.4f}")
-        print(f"  Improvement: {(optimized_accuracy - avg_random_accuracy) / avg_random_accuracy * 100:.2f}%")
+        print(f"  Accuracy improvement vs random: {(optimized_accuracy - avg_random_accuracy) / avg_random_accuracy * 100:.2f}%")
+        print(f"  CDMean improvement vs random:   {(optimized_cdmean - avg_random_cdmean) / avg_random_cdmean * 100:.2f}%")
     
-    # Plot the results
+    # Plot prediction accuracy results
     plt.figure(figsize=(10, 6))
     plt.plot(training_sizes, random_accuracies, 'o-', label='Random Selection')
     plt.plot(training_sizes, optimized_accuracies, 'o-', label='Optimized Selection')
-    plt.title('Prediction Accuracy vs. Training Set Size')
+    plt.title('Prediction Accuracy vs. Training Set Size\n(CDMean-Optimized vs Random)')
     plt.xlabel('Training Set Size')
     plt.ylabel('Prediction Accuracy')
     plt.grid(True)
@@ -204,6 +224,19 @@ def main():
     plt.tight_layout()
     plt.savefig('genomic_selection_results.png')
     print("\nSaved results plot to 'genomic_selection_results.png'")
+
+    # Plot CDMean results
+    plt.figure(figsize=(10, 6))
+    plt.plot(training_sizes, random_cdmeans, 'o-', label='Random Selection')
+    plt.plot(training_sizes, optimized_cdmeans, 'o-', label='Optimized Selection')
+    plt.title('CDMean vs. Training Set Size')
+    plt.xlabel('Training Set Size')
+    plt.ylabel('CDMean')
+    plt.grid(True)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig('genomic_selection_cdmean_results.png')
+    print("Saved CDMean plot to 'genomic_selection_cdmean_results.png'")
     
     print("\nGenomic selection example completed.")
 

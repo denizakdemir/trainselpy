@@ -137,7 +137,7 @@ def main():
         minitbefstop=50,       # Stop if no improvement for this many iterations
         nEliteSaved=20,        # Number of elite solutions to save
         nelite=50,             # Number of elite solutions to keep
-        npop=200,              # Population size
+        npop=2000,              # Population size
         mutprob=0.1,           # Mutation probability
         mutintensity=0.2,      # Mutation intensity
         crossprob=0.7,         # Crossover probability
