@@ -65,6 +65,9 @@ class ControlParams(TypedDict, total=False):
     use_surrogate_objective: bool
     surrogate_generation_prob: float
     use_nsga3: bool
+    # Optional hooks and evaluation controls
+    repair_func: Callable[..., None]
+    vectorized_stat: bool
 
 
 def make_data(
@@ -171,7 +174,10 @@ def make_data(
     result: TrainSelData = {
         'G': big_K,
         'R': big_R,
+        # Keep both keys for backward compatibility with older
+        # optimization_criteria implementations and existing tests.
         'lambda_val': lambda_val,
+        'lambda': lambda_val,
         'labels': labels,
         'Nind': K.shape[0],
         'class_name': "TrainSel_Data"
@@ -216,7 +222,9 @@ def train_sel_control(
     surrogate_prescreen_factor: int = 5,
     use_surrogate_objective: bool = False,
     surrogate_generation_prob: float = 0.0,
-    use_nsga3: bool = False
+    use_nsga3: bool = False,
+    repair_func: Optional[Callable[..., None]] = None,
+    vectorized_stat: bool = False
 ) -> ControlParams:
     """
     Create a control object for the TrainSel function.
@@ -291,6 +299,12 @@ def train_sel_control(
         Probability of generating offspring using surrogate optimization.
     use_nsga3 : bool
         Whether to use NSGA-III selection for multi-objective optimization.
+    repair_func : Callable, optional
+        Optional repair operator applied to offspring before fitness evaluation.
+    vectorized_stat : bool
+        When True, the objective function is assumed to support batched
+        (vectorized) inputs and will be called once per generation with all
+        solutions instead of once per solution.
         
     Returns
     -------
@@ -330,7 +344,9 @@ def train_sel_control(
         "surrogate_prescreen_factor": surrogate_prescreen_factor,
         "use_surrogate_objective": use_surrogate_objective,
         "surrogate_generation_prob": surrogate_generation_prob,
-        "use_nsga3": use_nsga3
+        "use_nsga3": use_nsga3,
+        "repair_func": repair_func,
+        "vectorized_stat": vectorized_stat
     }
     
     return control

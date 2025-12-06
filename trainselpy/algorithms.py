@@ -139,6 +139,10 @@ def evaluate_fitness(
     # Check if we have both integer and double variables
     has_int = any(sol.int_values for sol in population)
     has_dbl = any(sol.dbl_values for sol in population)
+    # Optional vectorized/batched evaluation flag
+    use_vectorized = False
+    if control is not None:
+        use_vectorized = control.get("vectorized_stat", False)
     
     if use_surrogate_objective:
         # Use surrogate model for prediction
@@ -161,7 +165,10 @@ def evaluate_fitness(
     
     if n_stat == 1:
         # Single-objective optimization
-        if is_parallel:
+        # Use batched evaluation either when explicitly requested via
+        # `vectorized_stat` or when `is_parallel` is True (the latter is
+        # used by the train_sel parallel wrapper).
+        if is_parallel or use_vectorized:
             # Parallel evaluation
             if has_int and has_dbl:
                 # Both integer and double variables
@@ -222,31 +229,72 @@ def evaluate_fitness(
                     fitness_cache[sol_hash] = sol.fitness
     else:
         # Multi-objective optimization with caching
-        for sol in population:
-            # Check cache first
-            sol_hash = sol.get_hash()
-            if sol_hash in fitness_cache:
-                sol.multi_fitness = fitness_cache[sol_hash]
-            else:
-                # Evaluate fitness
-                if has_int and has_dbl:
-                    # Both integer and double variables
-                    int_arg = sol.int_values if len(sol.int_values) > 1 else sol.int_values[0]
-                    dbl_arg = sol.dbl_values if len(sol.dbl_values) > 1 else sol.dbl_values[0]
-                    sol.multi_fitness = stat_func(int_arg, dbl_arg, data)
+        # Support both sequential and batched (vectorized) evaluation,
+        # mirroring the single-objective logic for backward compatibility.
+        if is_parallel or use_vectorized:
+            # Batched evaluation path: assume `stat_func` can accept
+            # whole-population arguments and returns a list/array of
+            # objective vectors per solution.
+            # NOTE: caching is less granular here: we bypass cache for
+            # this bulk call to keep the interface simple.
+            if has_int and has_dbl:
+                if len(population[0].int_values) > 1:
+                    int_sols = [sol.int_values for sol in population]
                 else:
-                    # Only integer or only double variables
-                    if has_int:
-                        int_arg = sol.int_values if len(sol.int_values) > 1 else sol.int_values[0]
-                        sol.multi_fitness = stat_func(int_arg, data)
-                    else:
-                        dbl_arg = sol.dbl_values if len(sol.dbl_values) > 1 else sol.dbl_values[0]
-                        sol.multi_fitness = stat_func(dbl_arg, data)
-                # Store in cache
-                fitness_cache[sol_hash] = sol.multi_fitness
+                    int_sols = [sol.int_values[0] for sol in population]
 
-            # For sorting purposes, use the sum (or other aggregation) as the main fitness
-            sol.fitness = sum(sol.multi_fitness)
+                if len(population[0].dbl_values) > 1:
+                    dbl_sols = [sol.dbl_values for sol in population]
+                else:
+                    dbl_sols = [sol.dbl_values[0] for sol in population]
+
+                multi_vals = stat_func(int_sols, dbl_sols, data)
+            else:
+                if has_int:
+                    if len(population[0].int_values) > 1:
+                        sols = [sol.int_values for sol in population]
+                    else:
+                        sols = [sol.int_values[0] for sol in population]
+                else:
+                    if len(population[0].dbl_values) > 1:
+                        sols = [sol.dbl_values for sol in population]
+                    else:
+                        sols = [sol.dbl_values[0] for sol in population]
+                multi_vals = stat_func(sols, data)
+
+            for i, sol in enumerate(population):
+                sol.multi_fitness = list(multi_vals[i])
+                sol.fitness = float(sum(sol.multi_fitness))
+                # Populate cache for future calls if desired
+                sol_hash = sol.get_hash()
+                fitness_cache[sol_hash] = sol.multi_fitness
+        else:
+            # Sequential evaluation with caching (original behavior)
+            for sol in population:
+                # Check cache first
+                sol_hash = sol.get_hash()
+                if sol_hash in fitness_cache:
+                    sol.multi_fitness = fitness_cache[sol_hash]
+                else:
+                    # Evaluate fitness
+                    if has_int and has_dbl:
+                        # Both integer and double variables
+                        int_arg = sol.int_values if len(sol.int_values) > 1 else sol.int_values[0]
+                        dbl_arg = sol.dbl_values if len(sol.dbl_values) > 1 else sol.dbl_values[0]
+                        sol.multi_fitness = stat_func(int_arg, dbl_arg, data)
+                    else:
+                        # Only integer or only double variables
+                        if has_int:
+                            int_arg = sol.int_values if len(sol.int_values) > 1 else sol.int_values[0]
+                            sol.multi_fitness = stat_func(int_arg, data)
+                        else:
+                            dbl_arg = sol.dbl_values if len(sol.dbl_values) > 1 else sol.dbl_values[0]
+                            sol.multi_fitness = stat_func(dbl_arg, data)
+                    # Store in cache
+                    fitness_cache[sol_hash] = sol.multi_fitness
+
+                # For sorting purposes, use the sum (or other aggregation) as the main fitness
+                sol.fitness = sum(sol.multi_fitness)
 
 
 def simulated_annealing(
@@ -690,8 +738,17 @@ def _generate_cma_offspring(
         # Generate candidates from CMA-ES
         cma_candidates = cma_optimizer.ask()
         
+        valid_candidates = []
+        valid_indices = []
+
         # Create offspring solutions
-        for cand_vec in cma_candidates:
+        for i, cand_vec in enumerate(cma_candidates):
+            if np.isnan(cand_vec).any():
+                continue
+                
+            valid_candidates.append(cand_vec)
+            valid_indices.append(i)
+
             # Create a new solution
             # For integer parts, copy from a random parent to maintain diversity
             parent = random.choice(parents)
@@ -704,8 +761,13 @@ def _generate_cma_offspring(
             
             cma_offspring.append(new_sol)
         
+        # Update cma_candidates to only include valid ones
+        if len(cma_offspring) < len(cma_candidates):
+            cma_candidates = [cma_candidates[i] for i in valid_indices]
+
         # Evaluate CMA offspring
-        evaluate_fitness(cma_offspring, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
+        if cma_offspring:
+            evaluate_fitness(cma_offspring, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
         
     return cma_offspring, cma_candidates
 
@@ -724,12 +786,96 @@ def _update_cma_es(
         cma_optimizer.tell(cma_candidates, cma_fitnesses)
 
 
+def knapsack_repair(
+    population: List[Solution],
+    candidates: List[List[int]],
+    setsizes: List[int],
+    settypes: List[str],
+    data: Dict[str, Any],
+    control: Optional[Dict[str, Any]] = None
+) -> None:
+    """
+    Repair operator for BOOL knapsack problems.
+
+    When ``data`` contains ``\"weights\"`` (1D array-like) and ``\"capacity\"``,
+    this operator enforces the capacity constraint by turning off items in
+    overweight solutions until the total weight is <= capacity. Items are
+    removed in order of decreasing weight.
+    """
+    weights = data.get("weights", None)
+    capacity = data.get("capacity", None)
+    if weights is None or capacity is None:
+        return
+
+    weights_arr = np.asarray(weights, dtype=float)
+    cap = float(capacity)
+
+    # Vectorized repair over the entire population for BOOL sets
+    for idx, stype in enumerate(settypes):
+        if stype != "BOOL":
+            continue
+
+        # Collect BOOL genes for this index across population
+        gene_rows = []
+        sol_indices = []
+        for s_idx, sol in enumerate(population):
+            if idx < len(sol.int_values):
+                gene_rows.append(sol.int_values[idx])
+                sol_indices.append(s_idx)
+
+        if not gene_rows:
+            continue
+
+        genes_mat = np.asarray(gene_rows, dtype=int)
+        # Compute total weights per solution
+        total_weights = genes_mat @ weights_arr
+
+        # Identify overweight solutions
+        overweight_mask = total_weights > cap
+        if not np.any(overweight_mask):
+            # No repair needed for this set index
+            continue
+
+        # Repair each overweight solution independently (still using NumPy arrays)
+        for local_idx, s_idx in enumerate(sol_indices):
+            if not overweight_mask[local_idx]:
+                continue
+
+            genes = genes_mat[local_idx].copy()
+            mask = genes.astype(bool)
+            total_weight = float(weights_arr[mask].sum())
+            if total_weight <= cap:
+                population[s_idx].int_values[idx] = genes.tolist()
+                continue
+
+            selected_indices = np.where(mask)[0]
+            order = np.argsort(weights_arr[selected_indices])[::-1]
+            for pos in order:
+                item = int(selected_indices[pos])
+                genes[item] = 0
+                total_weight -= float(weights_arr[item])
+                if total_weight <= cap:
+                    break
+
+            population[s_idx].int_values[idx] = genes.tolist()
+
+
 def _select_next_generation(
     combined_pop: List[Solution],
     pop_size: int,
     n_stat: int,
     use_nsga3: bool,
-    reference_points: Optional[List[List[float]]]
+    reference_points: Optional[List[List[float]]],
+    solution_diversity: bool = True,
+    candidates: Optional[List[List[int]]] = None,
+    setsizes: Optional[List[int]] = None,
+    settypes: Optional[List[str]] = None,
+    stat_func: Optional[Callable] = None,
+    data: Optional[Dict[str, Any]] = None,
+    is_parallel: bool = False,
+    control: Optional[Dict[str, Any]] = None,
+    fitness_cache: Optional[Dict[int, Union[float, List[float]]]] = None,
+    surrogate_model: Optional[SurrogateModel] = None
 ) -> List[Solution]:
     """
     Select the next generation of solutions.
@@ -760,7 +906,35 @@ def _select_next_generation(
     else:
         # Single-objective: sort by fitness
         combined_pop.sort(key=lambda x: x.fitness, reverse=True)
-        return combined_pop[:pop_size]
+        
+        if not solution_diversity:
+            return combined_pop[:pop_size]
+        
+        # Enforce diversity by removing exact duplicates (by hash) and refilling with fresh samples
+        unique_pop = []
+        seen_hashes = set()
+        for sol in combined_pop:
+            sol_hash = sol.get_hash()
+            if sol_hash in seen_hashes:
+                continue
+            seen_hashes.add(sol_hash)
+            unique_pop.append(sol)
+            if len(unique_pop) >= pop_size:
+                break
+        
+        if len(unique_pop) < pop_size:
+            can_refill = all(v is not None for v in (candidates, setsizes, settypes, stat_func))
+            if can_refill:
+                n_needed = pop_size - len(unique_pop)
+                new_samples = initialize_population(candidates, setsizes, settypes, n_needed)
+                evaluate_fitness(new_samples, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
+                unique_pop.extend(new_samples)
+                unique_pop.sort(key=lambda x: x.fitness, reverse=True)
+                return unique_pop[:pop_size]
+            # Fallback to original behavior if we cannot refill
+            return combined_pop[:pop_size]
+        
+        return unique_pop
 
 
 def genetic_algorithm(
@@ -893,10 +1067,16 @@ def genetic_algorithm(
         parents = selection(population, n_elite, tournament_size=3)
         
         # Create offspring through crossover
-        offspring = crossover(parents, cross_prob, cross_intensity, settypes, candidates)
+        if "crossover_func" in control:
+            offspring = control["crossover_func"](parents, cross_prob, cross_intensity, settypes, candidates)
+        else:
+            offspring = crossover(parents, cross_prob, cross_intensity, settypes, candidates)
         
         # Apply mutation
-        mutation(offspring, candidates, settypes, mut_prob, mut_intensity)
+        if "mutation_func" in control:
+            control["mutation_func"](offspring, candidates, settypes, mut_prob, mut_intensity)
+        else:
+            mutation(offspring, candidates, settypes, mut_prob, mut_intensity)
 
         # --- Surrogate Generation ---
         surrogate_offspring = _generate_surrogate_offspring(
@@ -908,6 +1088,11 @@ def genetic_algorithm(
         offspring = _prescreen_offspring(
             surrogate_model, offspring, population, candidates, settypes, control, gen
         )
+
+        # Optional repair step (e.g. knapsack capacity enforcement)
+        repair_func = control.get("repair_func", None)
+        if repair_func is not None:
+            repair_func(offspring, candidates, setsizes, settypes, data, control)
 
         # Evaluate fitness for the offspring (using cache)
         # If use_surrogate_objective is True, this will use the surrogate
@@ -926,7 +1111,23 @@ def genetic_algorithm(
         combined = population + offspring + cma_offspring
 
         # Select the best pop_size individuals from combined population
-        population = _select_next_generation(combined, pop_size, n_stat, use_nsga3, reference_points)
+        population = _select_next_generation(
+            combined,
+            pop_size,
+            n_stat,
+            use_nsga3,
+            reference_points,
+            solution_diversity,
+            candidates,
+            setsizes,
+            settypes,
+            stat_func,
+            data,
+            is_parallel,
+            control,
+            fitness_cache,
+            surrogate_model
+        )
 
         # --- Apply simulated annealing (SA) on elite solutions periodically ---
         # Changed to apply every sann_frequency generations instead of every generation for efficiency

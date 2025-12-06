@@ -45,7 +45,8 @@ def test_cdmean_correct_implementation():
     
     # Verify manually
     G = data["G"]
-    lambda_val = data["lambda"]
+    # Support both legacy 'lambda' and newer 'lambda_val' keys
+    lambda_val = data.get("lambda", data.get("lambda_val"))
     
     if hasattr(G, 'values'):
         G_matrix = G.values

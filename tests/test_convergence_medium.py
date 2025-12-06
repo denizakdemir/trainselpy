@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 import random
 from trainselpy import train_sel, set_control_default
+from trainselpy.algorithms import knapsack_repair
 
 class TestConvergenceMedium(unittest.TestCase):
     """
@@ -138,9 +139,16 @@ class TestConvergenceMedium(unittest.TestCase):
         # Use default control but ensure enough iterations
         control = self.control.copy()
         control["niterations"] = 500
+        # Enable hard-capacity repair
+        control["repair_func"] = knapsack_repair
+        
+        data = {
+            "weights": weights,
+            "capacity": capacity
+        }
         
         result = train_sel(
-            data={},
+            data=data,
             candidates=[list(range(n_items))],
             setsizes=[n_items],
             settypes=["BOOL"],
@@ -155,6 +163,7 @@ class TestConvergenceMedium(unittest.TestCase):
         
         print(f"Knapsack Best Value: {best_value}, Weight: {best_weight}/{capacity}")
         
+        # With repair, the capacity constraint should be respected exactly.
         self.assertLessEqual(best_weight, capacity, "Knapsack solution exceeded capacity")
         # Hard to know exact optimal, but should be reasonably high
         # Simple greedy (by value density) gives a baseline

@@ -37,7 +37,8 @@ def test_cdmean_mathematical_error():
     
     # Extract the relevant parts
     G = data["G"]
-    lambda_val = data["lambda"]
+    # Support both legacy 'lambda' and newer 'lambda_val' keys
+    lambda_val = data.get("lambda", data.get("lambda_val"))
     
     # Convert to numpy array if it's a DataFrame
     if hasattr(G, 'values'):

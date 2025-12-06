@@ -136,66 +136,77 @@ def _crossover_int_values(
     settypes: Optional[List[str]] = None,
     candidates: Optional[List[List[int]]] = None
 ) -> None:
-    """Helper for integer crossover."""
-    for j in range(len(parent1_vals)):
-        if parent1_vals and parent2_vals:
-            # Check if this is an ordered set (permutation) - use PMX
-            if settypes and j < len(settypes) and settypes[j] == "OS":
-                # Use PMX crossover for ordered sets (preserves permutation)
-                child1_vals[j], child2_vals[j] = _pmx_crossover(parent1_vals[j], parent2_vals[j])
-            else:
-                # Standard crossover for other types
-                # Calculate crossover points
-                size = len(parent1_vals[j])
-                n_points = max(1, int(size * crossintensity))
-                
-                # Select crossover points
-                points = sorted(random.sample(range(1, size), min(n_points, size - 1)))
-                
-                # Perform crossover
-                for k in range(len(points)):
-                    if k % 2 == 0:
-                        # Swap segments
-                        start = points[k - 1] if k > 0 else 0
-                        end = points[k]
-                        
-                        temp = child1_vals[j][start:end]
-                        child1_vals[j][start:end] = child2_vals[j][start:end]
-                        child2_vals[j][start:end] = temp
-                        
-                        # Check set type and fix if needed
-                        if settypes and j < len(settypes):
-                            # Fix unordered sets by sorting
-                            if settypes[j] in ["UOS", "UOMS"]:
-                                child1_vals[j].sort()
-                                child2_vals[j].sort()
-                            
-                            # Fix sets without repetition by removing duplicates
-                            if settypes[j] in ["UOS"] and candidates and j < len(candidates):
-                                for child_val in [child1_vals, child2_vals]:
-                                    # Fix child - optimized set-based approach
-                                    original_len = len(child_val[j])
-                                    unique_values = list(dict.fromkeys(child_val[j]))  # Preserves order, removes dups
+    """
+    Helper for integer crossover.
 
-                                    if len(unique_values) < original_len:
-                                        # Need to fill in missing values
-                                        current_set = set(unique_values)
-                                        n_missing = original_len - len(unique_values)
-                                        
-                                        # Use optimized replacement
-                                        cand = candidates[j]
-                                        stype = settypes[j]
-                                        
-                                        for _ in range(n_missing):
-                                            new_val = _get_valid_replacement(None, current_set, cand, stype)
-                                            unique_values.append(new_val)
-                                            current_set.add(new_val)
+    Internally uses NumPy arrays for segment swapping where beneficial,
+    but preserves the external list-of-lists representation.
+    """
+    if not parent1_vals or not parent2_vals:
+        return
 
-                                    child_val[j] = unique_values
+    n_sets = len(parent1_vals)
+    for j in range(n_sets):
+        size = len(parent1_vals[j])
+        if size <= 1:
+            continue
 
-                                    # Re-sort if needed (only once at the end)
-                                    if settypes[j] == "UOS":
-                                        child_val[j].sort()
+        if settypes and j < len(settypes) and settypes[j] == "OS":
+            # Ordered permutation: keep original PMX logic on lists
+            child1_vals[j], child2_vals[j] = _pmx_crossover(parent1_vals[j], parent2_vals[j])
+            continue
+
+        # Vectorized-style crossover for other types using NumPy views
+        n_points = max(1, int(size * crossintensity))
+        n_points = min(n_points, size - 1)
+        if n_points <= 0:
+            continue
+
+        # Use NumPy to generate sorted unique crossover points efficiently
+        points = np.sort(
+            np.random.choice(np.arange(1, size, dtype=int), size=n_points, replace=False)
+        ).tolist()
+
+        # Work on NumPy copies for segment operations
+        c1 = np.asarray(child1_vals[j], dtype=int)
+        c2 = np.asarray(child2_vals[j], dtype=int)
+
+        for k, point in enumerate(points):
+            if k % 2 != 0:
+                continue
+            start = points[k - 1] if k > 0 else 0
+            end = point
+            # Swap segments using NumPy slicing
+            tmp = c1[start:end].copy()
+            c1[start:end] = c2[start:end]
+            c2[start:end] = tmp
+
+        # Convert back to Python lists for downstream code
+        child1_vals[j] = c1.tolist()
+        child2_vals[j] = c2.tolist()
+
+        # Post-processing per set type
+        if settypes and j < len(settypes):
+            stype = settypes[j]
+            if stype in ["UOS", "UOMS"]:
+                child1_vals[j].sort()
+                child2_vals[j].sort()
+
+            if stype == "UOS" and candidates and j < len(candidates):
+                # Efficient duplicate repair using sets and _get_valid_replacement
+                for child_val in (child1_vals, child2_vals):
+                    vals = child_val[j]
+                    original_len = len(vals)
+                    unique_values = list(dict.fromkeys(vals))
+                    if len(unique_values) < original_len:
+                        current_set = set(unique_values)
+                        n_missing = original_len - len(unique_values)
+                        cand = candidates[j]
+                        for _ in range(n_missing):
+                            new_val = _get_valid_replacement(None, current_set, cand, stype)
+                            unique_values.append(new_val)
+                            current_set.add(new_val)
+                    child_val[j] = sorted(unique_values)
 
 def _crossover_dbl_values(
     parent1_vals: List[List[float]],
@@ -204,26 +215,44 @@ def _crossover_dbl_values(
     child2_vals: List[List[float]],
     crossintensity: float
 ) -> None:
-    """Helper for double crossover."""
-    for j in range(len(parent1_vals)):
-        if parent1_vals and parent2_vals:
-            # Calculate crossover points
-            size = len(parent1_vals[j])
-            n_points = max(1, int(size * crossintensity))
-            
-            # Select crossover points
-            points = sorted(random.sample(range(1, size), min(n_points, size - 1)))
-            
-            # Perform crossover
-            for k in range(len(points)):
-                if k % 2 == 0:
-                    # Swap segments
-                    start = points[k - 1] if k > 0 else 0
-                    end = points[k]
-                    
-                    temp = child1_vals[j][start:end]
-                    child1_vals[j][start:end] = child2_vals[j][start:end]
-                    child2_vals[j][start:end] = temp
+    """
+    Helper for double crossover.
+
+    Uses NumPy arrays for efficient segment swapping but keeps the
+    list-of-lists API intact.
+    """
+    if not parent1_vals or not parent2_vals:
+        return
+
+    n_sets = len(parent1_vals)
+    for j in range(n_sets):
+        size = len(parent1_vals[j])
+        if size <= 1:
+            continue
+
+        n_points = max(1, int(size * crossintensity))
+        n_points = min(n_points, size - 1)
+        if n_points <= 0:
+            continue
+
+        points = np.sort(
+            np.random.choice(np.arange(1, size, dtype=int), size=n_points, replace=False)
+        ).tolist()
+
+        c1 = np.asarray(child1_vals[j], dtype=float)
+        c2 = np.asarray(child2_vals[j], dtype=float)
+
+        for k, point in enumerate(points):
+            if k % 2 != 0:
+                continue
+            start = points[k - 1] if k > 0 else 0
+            end = point
+            tmp = c1[start:end].copy()
+            c1[start:end] = c2[start:end]
+            c2[start:end] = tmp
+
+        child1_vals[j] = c1.tolist()
+        child2_vals[j] = c2.tolist()
 
 def crossover(
     parents: List[Solution],
@@ -304,74 +333,107 @@ def mutation(
 ) -> None:
     """
     Perform mutation on the population.
-    
-    Parameters
-    ----------
-    population : List[Solution]
-        List of solutions
-    candidates : List[List[int]]
-        List of lists of candidate indices
-    settypes : List[str]
-        List of set types
-    mutprob : float
-        Probability of mutation (per variable/gene)
-    mutintensity : float
-        Intensity of mutation (std dev for doubles)
-        
-    Returns
-    -------
-    None
-        The population list is modified in-place
+
+    This implementation uses NumPy arrays internally to apply mutations
+    across the population in a more vectorized fashion while preserving
+    the existing public API and semantics.
     """
-    for sol in population:
-        # Mutation for integer values
-        for i, values in enumerate(sol.int_values):
-            # Check if this is an ordered set (permutation) - use swap mutation
-            if settypes[i] == "OS":
-                # For ordered sets (permutations), use swap mutation
-                # This preserves the permutation property
-                for pos in range(len(values)):
-                    if random.random() < mutprob:
-                        # Swap with a random other position
-                        swap_pos = random.randint(0, len(values) - 1)
-                        if swap_pos != pos:
-                            sol.int_values[i][pos], sol.int_values[i][swap_pos] = \
-                                sol.int_values[i][swap_pos], sol.int_values[i][pos]
+    if not population:
+        return
+
+    pop_size = len(population)
+
+    # ----- Integer-valued genes -----
+    # We process each int set index i across the whole population in a batched way.
+    max_int_sets = max(len(sol.int_values) for sol in population)
+
+    for i in range(max_int_sets):
+        stype = settypes[i]
+
+        # Collect this int set across all solutions that have it
+        cols = []
+        idx_map = []
+        for s_idx, sol in enumerate(population):
+            if i < len(sol.int_values):
+                cols.append(sol.int_values[i])
+                idx_map.append(s_idx)
+        if not cols:
+            continue
+
+        arr = np.asarray(cols, dtype=int)
+        n_rows, n_cols = arr.shape
+
+        if stype == "OS":
+            # Ordered permutations: swap-based mutation
+            # Random mask of positions to mutate
+            mask = np.random.rand(n_rows, n_cols) < mutprob
+            # For each row, swap selected positions with random other positions
+            for r in range(n_rows):
+                row = arr[r]
+                pos_indices = np.where(mask[r])[0]
+                if pos_indices.size == 0:
+                    continue
+                # Choose random swap positions for each selected index
+                swap_pos = np.random.randint(0, n_cols, size=pos_indices.size)
+                for pos, sp in zip(pos_indices, swap_pos):
+                    if pos != sp:
+                        row[pos], row[sp] = row[sp], row[pos]
+            # Write back
+            for r, s_idx in enumerate(idx_map):
+                population[s_idx].int_values[i] = arr[r].tolist()
+        else:
+            # Standard mutation for BOOL / set types
+            mask = np.random.rand(n_rows, n_cols) < mutprob
+
+            if stype == "BOOL":
+                # Flip bits using XOR-like behavior
+                arr[mask] = 1 - arr[mask]
+                for r, s_idx in enumerate(idx_map):
+                    population[s_idx].int_values[i] = arr[r].tolist()
             else:
-                # Standard mutation for other types
-                # Iterate over all positions (per-gene mutation)
-                for pos in range(len(values)):
-                    if random.random() < mutprob:
-                        if settypes[i] == "BOOL":
-                            # For boolean variables, flip the bit
-                            sol.int_values[i][pos] = 1 - sol.int_values[i][pos]
-                        else:
-                            # For set types, replace with a random value
-                            old_val = sol.int_values[i][pos]
-                            cand = candidates[i]
-                            stype = settypes[i]
-                            
-                            # Use optimized replacement
-                            if stype in ["UOS", "OS"]:
-                                current_set = set(sol.int_values[i])
-                            else:
-                                current_set = set() # Not used for multisets
-                                
-                            new_val = _get_valid_replacement(old_val, current_set, cand, stype)
-                            sol.int_values[i][pos] = new_val
-                            
-                # For unordered sets, ensure the values are sorted after all mutations
-                if settypes[i] in ["UOS", "UOMS"]:
-                    sol.int_values[i].sort()
-        
-        # Mutation for double values
+                # Set types: UOS, UOMS, OMS
+                cand = candidates[i]
+                cand_arr = np.asarray(cand, dtype=int)
+
+                for r, s_idx in enumerate(idx_map):
+                    row = arr[r]
+                    row_mask = mask[r]
+                    if not np.any(row_mask):
+                        continue
+
+                    if stype in ["UOS", "OS"]:
+                        current_set = set(row.tolist())
+                    else:
+                        current_set = set()
+
+                    # Mutate each marked position
+                    positions = np.where(row_mask)[0]
+                    for pos in positions:
+                        old_val = int(row[pos])
+                        new_val = _get_valid_replacement(old_val, current_set, cand, stype)
+                        row[pos] = new_val
+                        if stype in ["UOS", "OS"]:
+                            current_set.discard(old_val)
+                            current_set.add(new_val)
+
+                    # Post-process ordering for unordered sets
+                    new_list = row.tolist()
+                    if stype in ["UOS", "UOMS"]:
+                        new_list.sort()
+                    population[s_idx].int_values[i] = new_list
+
+    # ----- Double-valued genes -----
+    # For continuous variables we keep the original per-gene mutation
+    # semantics to preserve convergence behavior on benchmark problems.
+    for sol in population:
         for i, values in enumerate(sol.dbl_values):
-            # Iterate over all positions
             for pos in range(len(values)):
                 if random.random() < mutprob:
-                    # Mutate the value
                     delta = np.random.normal(0, mutintensity)
-                    sol.dbl_values[i][pos] += delta
-                    
+                    new_val = values[pos] + delta
                     # Ensure the value is in the valid range [0, 1]
-                    sol.dbl_values[i][pos] = max(0, min(1, sol.dbl_values[i][pos]))
+                    if new_val < 0.0:
+                        new_val = 0.0
+                    elif new_val > 1.0:
+                        new_val = 1.0
+                    sol.dbl_values[i][pos] = new_val

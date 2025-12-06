@@ -364,7 +364,8 @@ def cdmean_opt(soln: List[int], data: Dict[str, Any]) -> float:
     soln : List[int]
         Indices of the selected samples
     data : Dict[str, Any]
-        Data structure containing G and lambda
+        Data structure containing G and lambda (supports both
+        legacy key ``\"lambda\"`` and newer ``\"lambda_val\"``).
 
     Returns
     -------
@@ -372,7 +373,8 @@ def cdmean_opt(soln: List[int], data: Dict[str, Any]) -> float:
         CDMean value
     """
     G_matrix = _ensure_numpy(data["G"])
-    lambda_val = data["lambda"]
+    # Support both legacy 'lambda' and newer 'lambda_val' keys.
+    lambda_val = data.get("lambda", data.get("lambda_val", 1.0))
 
     n_samples = G_matrix.shape[0]
     k = len(soln)
@@ -441,7 +443,8 @@ def cdmean_opt_target(soln: List[int], data: Dict[str, Any]) -> float:
     soln : List[int]
         Indices of the selected samples
     data : Dict[str, Any]
-        Data structure containing G, lambda, and Target
+        Data structure containing G, lambda, and Target (supports both
+        legacy key ``\"lambda\"`` and newer ``\"lambda_val\"``).
 
     Returns
     -------
@@ -449,7 +452,8 @@ def cdmean_opt_target(soln: List[int], data: Dict[str, Any]) -> float:
         CDMean value for target samples
     """
     G_matrix = _ensure_numpy(data["G"])
-    lambda_val = data["lambda"]
+    # Support both legacy 'lambda' and newer 'lambda_val' keys.
+    lambda_val = data.get("lambda", data.get("lambda_val", 1.0))
     targ = data["Target"]
 
     n_samples = G_matrix.shape[0]
