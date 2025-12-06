@@ -310,6 +310,10 @@ def crossover(
                     child1.dbl_values, child2.dbl_values,
                     crossintensity
                 )
+
+                # Invalidate cached hashes since genomes have changed
+                child1.invalidate_hash()
+                child2.invalidate_hash()
                 
                 offspring.append(child1)
                 offspring.append(child2)
@@ -381,6 +385,7 @@ def mutation(
             # Write back
             for r, s_idx in enumerate(idx_map):
                 population[s_idx].int_values[i] = arr[r].tolist()
+                population[s_idx].invalidate_hash()
         else:
             # Standard mutation for BOOL / set types
             mask = np.random.rand(n_rows, n_cols) < mutprob
@@ -390,6 +395,7 @@ def mutation(
                 arr[mask] = 1 - arr[mask]
                 for r, s_idx in enumerate(idx_map):
                     population[s_idx].int_values[i] = arr[r].tolist()
+                    population[s_idx].invalidate_hash()
             else:
                 # Set types: UOS, UOMS, OMS
                 cand = candidates[i]
@@ -421,11 +427,13 @@ def mutation(
                     if stype in ["UOS", "UOMS"]:
                         new_list.sort()
                     population[s_idx].int_values[i] = new_list
+                    population[s_idx].invalidate_hash()
 
     # ----- Double-valued genes -----
     # For continuous variables we keep the original per-gene mutation
     # semantics to preserve convergence behavior on benchmark problems.
     for sol in population:
+        dbl_mutated = False
         for i, values in enumerate(sol.dbl_values):
             for pos in range(len(values)):
                 if random.random() < mutprob:
@@ -437,3 +445,7 @@ def mutation(
                     elif new_val > 1.0:
                         new_val = 1.0
                     sol.dbl_values[i][pos] = new_val
+                    dbl_mutated = True
+
+        if dbl_mutated:
+            sol.invalidate_hash()

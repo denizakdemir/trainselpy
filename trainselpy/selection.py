@@ -29,6 +29,11 @@ def fast_non_dominated_sort(population: List[Solution]) -> List[List[Solution]]:
     domination_count = [0] * n
     dominated_solutions = [[] for _ in range(n)]
 
+    # Create a mapping from solution hash to indices for O(1) lookup
+    # CRITICAL: Use hash instead of id() to handle copied solutions correctly
+    # id() can fail when solutions are copied or when IDs are reused after GC
+    sol_to_idx = {sol.get_hash(): i for i, sol in enumerate(population)}
+
     fronts = [[]]
 
     # Compare all pairs of solutions
@@ -37,22 +42,23 @@ def fast_non_dominated_sort(population: List[Solution]) -> List[List[Solution]]:
             sol_i = population[i]
             sol_j = population[j]
 
-            # Check if i dominates j
-            i_dominates_j = (all(sol_i.multi_fitness[k] >= sol_j.multi_fitness[k]
-                                for k in range(len(sol_i.multi_fitness))) and
-                           any(sol_i.multi_fitness[k] > sol_j.multi_fitness[k]
-                               for k in range(len(sol_i.multi_fitness))))
+            # Optimized dominance check: compute once instead of twice
+            n_obj = len(sol_i.multi_fitness)
+            i_better = 0  # Count objectives where i is better
+            j_better = 0  # Count objectives where j is better
 
-            # Check if j dominates i
-            j_dominates_i = (all(sol_j.multi_fitness[k] >= sol_i.multi_fitness[k]
-                                for k in range(len(sol_i.multi_fitness))) and
-                           any(sol_j.multi_fitness[k] > sol_i.multi_fitness[k]
-                               for k in range(len(sol_i.multi_fitness))))
+            for k in range(n_obj):
+                if sol_i.multi_fitness[k] > sol_j.multi_fitness[k]:
+                    i_better += 1
+                elif sol_j.multi_fitness[k] > sol_i.multi_fitness[k]:
+                    j_better += 1
 
-            if i_dominates_j:
+            # i dominates j if i is better in at least one objective and not worse in any
+            if i_better > 0 and j_better == 0:
                 dominated_solutions[i].append(j)
                 domination_count[j] += 1
-            elif j_dominates_i:
+            # j dominates i if j is better in at least one objective and not worse in any
+            elif j_better > 0 and i_better == 0:
                 dominated_solutions[j].append(i)
                 domination_count[i] += 1
 
@@ -65,8 +71,9 @@ def fast_non_dominated_sort(population: List[Solution]) -> List[List[Solution]]:
     while fronts[front_idx]:
         next_front = []
         for sol in fronts[front_idx]:
-            # Get the index of this solution
-            sol_idx = population.index(sol)
+            # Get the index of this solution using O(1) lookup
+            # Use hash instead of id() for correctness with copied solutions
+            sol_idx = sol_to_idx[sol.get_hash()]
             # For each solution that this one dominates
             for dominated_idx in dominated_solutions[sol_idx]:
                 domination_count[dominated_idx] -= 1
@@ -118,7 +125,10 @@ def calculate_crowding_distance(front: List[Solution]) -> List[float]:
         obj_max = front[sorted_indices[-1]].multi_fitness[m]
         obj_range = obj_max - obj_min
 
-        if obj_range > 0:
+        # NUMERICAL STABILITY FIX: Use epsilon to avoid division issues
+        # and handle degenerate cases where all solutions have same objective value
+        epsilon = 1e-10
+        if obj_range > epsilon:
             # Calculate crowding distance for middle solutions
             for i in range(1, n - 1):
                 if distances[sorted_indices[i]] != float('inf'):
@@ -126,6 +136,12 @@ def calculate_crowding_distance(front: List[Solution]) -> List[float]:
                         (front[sorted_indices[i + 1]].multi_fitness[m] -
                          front[sorted_indices[i - 1]].multi_fitness[m]) / obj_range
                     )
+        else:
+            # All solutions have same objective value - assign equal crowding distance
+            # This ensures diversity selection still works even with degenerate objectives
+            for i in range(1, n - 1):
+                if distances[sorted_indices[i]] != float('inf'):
+                    distances[sorted_indices[i]] += 1.0  # Arbitrary non-zero value for diversity
 
     return distances
 
@@ -186,11 +202,13 @@ def selection(
         selected = [sol.copy() for sol in sorted_pop[:n_elite]]
     
     # Fill the rest with tournament selection
+    # Note: We don't copy here since these solutions will only be used as parents
+    # for crossover/mutation, which create new offspring. This avoids redundant copying.
     pop_size = len(population)
     while len(selected) < pop_size:
         # Select tournament_size random individuals
         tournament = random.sample(population, tournament_size)
-        
+
         if is_multi_objective:
             # For multi-objective, select a non-dominated solution from the tournament
             non_dominated = []
@@ -204,7 +222,7 @@ def selection(
                             break
                 if not is_dominated:
                     non_dominated.append(sol)
-            
+
             if non_dominated:
                 # If there are multiple non-dominated solutions, select randomly
                 winner = random.choice(non_dominated)
@@ -214,7 +232,8 @@ def selection(
         else:
             # For single-objective, select the best by fitness
             winner = max(tournament, key=lambda x: x.fitness)
-        
-        selected.append(winner.copy())
-    
+
+        # Reference instead of copy - crossover/mutation will create new solutions
+        selected.append(winner)
+
     return selected

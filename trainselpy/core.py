@@ -65,8 +65,11 @@ class ControlParams(TypedDict, total=False):
     use_surrogate_objective: bool
     surrogate_generation_prob: float
     use_nsga3: bool
+    use_cma_es: bool
+    cma_es_sigma: float
     # Optional hooks and evaluation controls
     repair_func: Callable[..., None]
+    callback: Callable[[Dict[str, Any]], None]
     vectorized_stat: bool
 
 
@@ -223,6 +226,8 @@ def train_sel_control(
     use_surrogate_objective: bool = False,
     surrogate_generation_prob: float = 0.0,
     use_nsga3: bool = False,
+    use_cma_es: bool = True,
+    cma_es_sigma: float = 0.2,
     repair_func: Optional[Callable[..., None]] = None,
     vectorized_stat: bool = False
 ) -> ControlParams:
@@ -299,8 +304,18 @@ def train_sel_control(
         Probability of generating offspring using surrogate optimization.
     use_nsga3 : bool
         Whether to use NSGA-III selection for multi-objective optimization.
+    use_cma_es : bool
+        Whether to use CMA-ES for continuous optimization (DBL variables).
+    cma_es_sigma : float
+        Initial step size (sigma) for CMA-ES optimizer. Default 0.2.
+        Larger values increase exploration, smaller values increase exploitation.
     repair_func : Callable, optional
         Optional repair operator applied to offspring before fitness evaluation.
+    callback : Callable[[Dict[str, Any]], None], optional
+        Optional callback function invoked at the end of each generation.
+        Receives a dictionary with keys: 'generation', 'population',
+        'best_solution', 'fitness_history', 'pareto_front' (if multi-objective),
+        'control'. Useful for checkpointing, visualization, and custom logging.
     vectorized_stat : bool
         When True, the objective function is assumed to support batched
         (vectorized) inputs and will be called once per generation with all
@@ -345,6 +360,8 @@ def train_sel_control(
         "use_surrogate_objective": use_surrogate_objective,
         "surrogate_generation_prob": surrogate_generation_prob,
         "use_nsga3": use_nsga3,
+        "use_cma_es": use_cma_es,
+        "cma_es_sigma": cma_es_sigma,
         "repair_func": repair_func,
         "vectorized_stat": vectorized_stat
     }

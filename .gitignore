@@ -15,3 +15,7 @@ build/
 
 # github folder 
 .github/
+
+# Agent documentation
+CLAUDE.md
+agent_docs/
