@@ -624,8 +624,9 @@ def _initialize_cma_es(
     """
     cma_optimizer = None
     has_dbl = any(st == "DBL" for st in settypes)
+    use_cma_es = control.get("use_cma_es", True)
     
-    if has_dbl and population:
+    if has_dbl and population and use_cma_es:
         # Create initial mean from the best solution
         best_solution = max(population, key=lambda x: x.fitness)
         initial_mean = flatten_dbl_values(best_solution.dbl_values)
