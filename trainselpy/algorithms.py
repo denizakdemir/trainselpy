@@ -10,6 +10,11 @@ from joblib import Parallel, delayed
 import math
 
 from trainselpy.solution import Solution, flatten_dbl_values, unflatten_dbl_values
+from trainselpy.utils import (
+    calculate_relationship_matrix,
+    create_mixed_model_data,
+    compute_hypervolume
+)
 from trainselpy.cma_es import CMAESOptimizer
 from trainselpy.surrogate import SurrogateModel
 from trainselpy.nsga3 import nsga3_selection, generate_reference_points
@@ -1126,23 +1131,48 @@ def genetic_algorithm(
         # -------------------------------------------------------------------------------
 
         # Update best solution and track improvement
-        # CRITICAL FIX: For multi-objective, track Pareto front quality, not scalar fitness sum
         if n_stat > 1:
-            # For multi-objective: use Pareto front size as improvement metric
-            # This is a simple but effective metric - more sophisticated approaches
-            # could use hypervolume indicator
+            # CRITICAL FIX: For multi-objective, track Pareto front quality, not scalar fitness sum
+            # For multi-objective: use Hypervolume Indicator as improvement metric
+            # This is more robust than Pareto front size
             fronts = fast_non_dominated_sort(population)
             if fronts and fronts[0]:
-                current_pareto_size = len(fronts[0])
-                current_best = max(population, key=lambda x: x.fitness)  # Keep best for logging
+                pareto_solutions = fronts[0]
+                pareto_front = [sol.multi_fitness for sol in pareto_solutions]
+                
+                # Determine reference point for Hypervolume calculation.
+                # We need a fixed reference point throughout the run to make valid comparisons.
+                # We store it in the 'control' dictionary to persist across generations.
+                
+                if "_hv_ref_point" not in control:
+                    # Initialize reference point based on current population's minimums with a margin.
+                    # Since we maximize, reference point should be strictly lower than all points.
+                    current_min = [min(s.multi_fitness[i] for s in population) for i in range(n_stat)]
+                    control["_hv_ref_point"] = [x - 1.0 for x in current_min] 
+                
+                ref_point = control["_hv_ref_point"]
+                
+                # Compute Hypervolume
+                current_hv = compute_hypervolume(pareto_front, ref_point)
+                
+                # Track best Hypervolume found so far
+                if "_best_hv" not in control:
+                    control["_best_hv"] = -1.0
+                
+                current_best = max(population, key=lambda x: x.fitness)  # Keep best individual for logging
 
-                # Track if Pareto front improved (more diverse non-dominated solutions)
-                if not hasattr(best_solution, '_pareto_size'):
-                    best_solution._pareto_size = 0
-
-                if current_pareto_size > best_solution._pareto_size:
+                # Check for relative improvement in Hypervolume
+                # Threshold for improvement (e.g. 0.001%) to avoid floating point noise
+                if current_hv > control["_best_hv"] * 1.00001: 
                     best_solution = current_best.copy()
-                    best_solution._pareto_size = current_pareto_size
+                    
+                    # Update global best HV
+                    control["_best_hv"] = current_hv 
+                    
+                    # Update best_solution with HV stats for potential debugging
+                    best_solution._best_hv = current_hv
+                    best_solution._hv_ref_point = ref_point
+                    
                     no_improvement_count = 0
                 else:
                     no_improvement_count += 1
