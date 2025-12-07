@@ -34,6 +34,7 @@ setup(
         "scikit-learn>=0.23.0",
         "matplotlib>=3.2.0",
         "joblib>=0.16.0",
+        "torch>=1.7.0",
     ],
     extras_require={
         "r_conversion": ["rpy2"],

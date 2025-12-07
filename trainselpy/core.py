@@ -71,6 +71,16 @@ class ControlParams(TypedDict, total=False):
     repair_func: Callable[..., None]
     callback: Callable[[Dict[str, Any]], None]
     vectorized_stat: bool
+    # Neural Network Parameters
+    use_vae: bool
+    use_gan: bool
+    nn_epochs: int
+    nn_update_freq: int
+    nn_start_gen: int
+    vae_lr: float
+    gan_lr: float
+    gan_lambda_gp: float
+    gan_n_critic: int
 
 
 def make_data(
@@ -229,7 +239,17 @@ def train_sel_control(
     use_cma_es: bool = True,
     cma_es_sigma: float = 0.2,
     repair_func: Optional[Callable[..., None]] = None,
-    vectorized_stat: bool = False
+    vectorized_stat: bool = False,
+    # Neural Network Parameters
+    use_vae: bool = False,
+    use_gan: bool = False,
+    nn_epochs: int = 10,
+    nn_update_freq: int = 5,
+    nn_start_gen: int = 10,
+    vae_lr: float = 1e-3,
+    gan_lr: float = 1e-4,
+    gan_lambda_gp: float = 10.0,
+    gan_n_critic: int = 5
 ) -> ControlParams:
     """
     Create a control object for the TrainSel function.
@@ -363,7 +383,16 @@ def train_sel_control(
         "use_cma_es": use_cma_es,
         "cma_es_sigma": cma_es_sigma,
         "repair_func": repair_func,
-        "vectorized_stat": vectorized_stat
+        "vectorized_stat": vectorized_stat,
+        "use_vae": use_vae,
+        "use_gan": use_gan,
+        "nn_epochs": nn_epochs,
+        "nn_update_freq": nn_update_freq,
+        "nn_start_gen": nn_start_gen,
+        "vae_lr": vae_lr,
+        "gan_lr": gan_lr,
+        "gan_lambda_gp": gan_lambda_gp,
+        "gan_n_critic": gan_n_critic
     }
     
     return control

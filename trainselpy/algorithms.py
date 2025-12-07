@@ -20,6 +20,13 @@ from trainselpy.surrogate import SurrogateModel
 from trainselpy.nsga3 import nsga3_selection, generate_reference_points
 from trainselpy.operators import crossover, mutation
 from trainselpy.selection import selection, fast_non_dominated_sort, calculate_crowding_distance
+try:
+    import torch
+    import torch.optim as optim
+    from trainselpy.nn_models import VAE, Generator, Discriminator, DecisionStructure, compute_gradient_penalty
+    HAS_TORCH = True
+except ImportError:
+    HAS_TORCH = False
 
 
 def initialize_population(
@@ -902,6 +909,557 @@ def _select_next_generation(
         # Natural convergence is allowed - duplicate solutions indicate local optimum
         return unique_pop[:pop_size] if len(unique_pop) >= pop_size else unique_pop
 
+# --- Helper Functions for Neural Models ---
+
+def _extract_decision_parts(solutions, settypes, setsizes, candidates):
+    """
+    Extracts binary, permutation, and continuous parts from a list of solutions
+    for Neural Network training.
+    """
+    if not solutions:
+        return None, None, None
+        
+    binary_parts = []
+    perm_parts_list = [] # List of lists
+    cont_parts = []
+    
+    # Pre-allocate perm parts list structure
+    # Count perm sets
+    perm_set_indices = [i for i, t in enumerate(settypes) if t in ["OS", "UOS", "OMS", "UOMS"]]
+    n_perm_sets = len(perm_set_indices)
+    for _ in range(n_perm_sets):
+        perm_parts_list.append([])
+    
+    # We DO NOT support generic mixed types interleaved arbitrarily for the simple VAE/GAN structure
+    # We assume standard structure or we flatten all BOOLs into one vector, all DBL into one, etc.
+    # The DecisionStructure in nn_models.py supports: binary_dim, permutation_dims, continuous_dim.
+    # We need to map our data to that.
+    
+    for sol in solutions:
+        # Binary (BOOL)
+        bin_vec = []
+        # We need to look at settypes to know which int_values are BOOL
+        current_int_idx = 0
+        
+        # Permutation temp lists
+        current_perm_idx = 0
+        
+        for i, stype in enumerate(settypes):
+            if stype == "BOOL":
+                # Get the bits
+                if current_int_idx < len(sol.int_values):
+                    vals = sol.int_values[current_int_idx]
+                    bin_vec.extend(vals)
+                current_int_idx += 1
+            elif stype in ["OS", "UOS", "OMS", "UOMS"]:
+                # Permutation / Set
+                if current_int_idx < len(sol.int_values):
+                    vals = sol.int_values[current_int_idx]
+                    # We need indices relative to the candidate list size
+                    # candidates[i] is the list of available items
+                    # The values in sol are indices into candidates[i]??
+                    # initialize_population uses: selected = np.random.choice(cand, size=size)
+                    # where cand is a list of integers from candidates[i]
+                    # usually candidates list is just [0, 1, ..., N-1].
+                    # We assume values are 0-based indices.
+                    
+                    # Convert to tensor compatible format
+                    # perm_parts expects long tensor of indices
+                    perm_parts_list[current_perm_idx].append(vals)
+                    current_perm_idx += 1
+                current_int_idx += 1
+            elif stype == "DBL":
+                # handled in dbl_values
+                pass
+                
+        if bin_vec:
+            binary_parts.append(bin_vec)
+            
+        if sol.dbl_values:
+            # Flatten all dbl values
+            flat_dbl = flatten_dbl_values(sol.dbl_values)
+            cont_parts.append(flat_dbl)
+            
+    # Convert to tensors
+    bin_tensor = torch.tensor(binary_parts, dtype=torch.float32) if binary_parts else None
+    
+    perm_tensors = []
+    for p_list in perm_parts_list:
+        if p_list:
+            perm_tensors.append(torch.tensor(p_list, dtype=torch.long))
+            
+    if cont_parts:
+        # Optimization: stack numpy arrays first to avoid warning/overhead
+        cont_arr = np.array(cont_parts)
+        cont_tensor = torch.tensor(cont_arr, dtype=torch.float32)
+    else:
+        cont_tensor = None
+    
+    return bin_tensor, perm_tensors, cont_tensor
+
+def _initialize_neural_models(control, candidates, setsizes, settypes):
+    """
+    Initialize VAE, Generator, Discriminator if enabled.
+    """
+    if not HAS_TORCH:
+        if control.get("use_vae", False) or control.get("use_gan", False):
+            print("Warning: Torch not installed. VAE/GAN features disabled.")
+        return None
+        
+    use_vae = control.get("use_vae", False)
+    use_gan = control.get("use_gan", False)
+    
+    if not (use_vae or use_gan):
+        return None
+        
+    # Analyze structure
+    bin_dim = 0
+    perm_dims = []
+    cont_dim = 0
+    
+    for i, stype in enumerate(settypes):
+        if stype == "BOOL":
+            bin_dim += len(candidates[i]) # BOOL size is determined by candidate length, not setsize
+        elif stype in ["OS", "UOS", "OMS", "UOMS"]:
+            # n items to choose from, k items to choose
+            n = len(candidates[i])
+            k = setsizes[i]
+            perm_dims.append((n, k))
+        elif stype == "DBL":
+            cont_dim += setsizes[i]
+            
+    structure = DecisionStructure(bin_dim, perm_dims, cont_dim)
+    device = control.get("device", "cpu")
+    
+    models = {
+        "structure": structure,
+        "device": device
+    }
+    
+    if use_vae:
+        latent_dim = control.get("vae_latent_dim", 32)
+        beta = control.get("vae_beta", 1.0)
+        vae = VAE(structure, latent_dim, beta).to(device)
+        optimizer = optim.Adam(vae.parameters(), lr=control.get("vae_lr", 1e-3))
+        models["vae"] = vae
+        models["vae_opt"] = optimizer
+        if control.get("progress", True):
+            print(f"Initialized VAE (latent={latent_dim}, beta={beta})")
+
+    if use_gan:
+        cond_dim = control.get("gan_cond_dim", 0) # e.g. 1 for fitness rank
+        # If 0, we might add dummy conditioning or not support conditional yet unless specified
+        # Let's support basic conditional on scalar fitness
+        if cond_dim == 0: cond_dim = 1 # Default to fitness conditioning
+        
+        noise_dim = control.get("gan_noise_dim", 64)
+        
+        netG = Generator(structure, cond_dim, noise_dim).to(device)
+        netD = Discriminator(structure, cond_dim).to(device)
+        
+        optG = optim.Adam(netG.parameters(), lr=control.get("gan_lr", 1e-4), betas=(0.5, 0.9))
+        optD = optim.Adam(netD.parameters(), lr=control.get("gan_lr", 1e-4), betas=(0.5, 0.9))
+        
+        models["gan_G"] = netG
+        models["gan_D"] = netD
+        models["gan_optG"] = optG
+        models["gan_optD"] = optD
+        models["cond_dim"] = cond_dim
+        models["noise_dim"] = noise_dim
+        if control.get("progress", True):
+            print(f"Initialized WGAN-GP (noise={noise_dim})")
+            
+    return models
+
+def _train_neural_models(models, population, control, settypes, setsizes, candidates):
+    """
+    Train VAE and/or GAN on the current population.
+    """
+    if not models:
+        return
+        
+    device = models["device"]
+    structure = models["structure"]
+    n_epochs = control.get("nn_epochs", 5)
+    batch_size = control.get("nn_batch_size", 32)
+    
+    # Prepare data
+    bin_t, perm_t, cont_t = _extract_decision_parts(population, settypes, setsizes, candidates)
+    
+    # Flatten/Concat to get 'v' for training VAE/GAN?
+    # No, DecisionStructure.encode_from_parts does that on the fly
+    
+    # For batching, we need a dataset
+    # Simple manual batching
+    n_samples = len(population)
+    indices = np.arange(n_samples)
+    
+    if "vae" in models:
+        vae = models["vae"]
+        opt = models["vae_opt"]
+        vae.train()
+        if control.get("progress", False):
+            print(f"  [NN] Training VAE on {n_samples} samples for {n_epochs} epochs...")
+            
+        for epoch in range(n_epochs):
+            np.random.shuffle(indices)
+            epoch_loss = 0
+            for start_idx in range(0, n_samples, batch_size):
+                batch_idx = indices[start_idx:start_idx+batch_size]
+                
+                # Slicing parts
+                b_batch = bin_t[batch_idx].to(device) if bin_t is not None else None
+                p_batch = [pt[batch_idx].to(device) for pt in perm_t] if perm_t else None
+                c_batch = cont_t[batch_idx].to(device) if cont_t is not None else None
+                
+                # Encoder needs 'v'
+                v = structure.encode_from_parts(b_batch, p_batch, c_batch, device=device)
+                
+                opt.zero_grad()
+                recon_x, mu, logvar = vae(v)
+                loss, _, _ = vae.loss_function(recon_x, v, mu, logvar)
+                loss.backward()
+                opt.step()
+                epoch_loss += loss.item()
+        
+        if control.get("progress", False):
+            print(f"  [VAE] Epoch {n_epochs}: Loss={epoch_loss/n_samples:.4f}")
+
+    if "gan_G" in models:
+        # GAN training usually requires more steps for D
+        netG = models["gan_G"]
+        netD = models["gan_D"]
+        optG = models["gan_optG"]
+        optD = models["gan_optD"]
+        n_critic = control.get("gan_n_critic", 5)
+        lambda_gp = control.get("gan_lambda_gp", 10)
+        
+        # Only train on top X%? "Elite Generator"
+        # Assuming 'population' passed here is already the full population, we might want to filter
+        # But let's assume caller filtered it or we train on distribution of "good" solutions
+        # Actually spec says: "Train on S_elite = top 10-20%"
+        # We'll assume the caller passes the elite population or we sort here.
+        # Let's sort here to be safe if population is unsorted.
+        # But wait, population passed to us might be the whole thing.
+        # Let's take top 25% for GAN training.
+        
+        sorted_indices = np.argsort([s.fitness for s in population])[::-1]
+        n_top = max(batch_size, int(n_samples * 0.25))
+        top_indices = sorted_indices[:n_top]
+        
+        gan_indices = top_indices.copy()
+        n_gan_samples = len(gan_indices)
+        
+        for epoch in range(n_epochs):
+            if control.get("progress", False) and epoch == 0:
+                print(f"  [NN] Training GAN on {n_gan_samples} elite samples for {n_epochs} epochs...")
+            np.random.shuffle(gan_indices)
+            
+            for start_idx in range(0, n_gan_samples, batch_size):
+                # Train Critic
+                for _ in range(n_critic):
+                     # Sample real batch
+                    batch_idx = gan_indices[np.random.randint(0, n_gan_samples, batch_size)]
+                                        
+                    b_batch = bin_t[batch_idx].to(device) if bin_t is not None else None
+                    p_batch = [pt[batch_idx].to(device) for pt in perm_t] if perm_t else None
+                    c_batch = cont_t[batch_idx].to(device) if cont_t is not None else None
+                    
+                    real_data = structure.encode_from_parts(b_batch, p_batch, c_batch, device=device)
+                    
+                    # Conditioning: let's use normalized fitness rank? 
+                    # Or raw fitness?
+                    # Spec: "Objective quantiles", "Pareto front IDs".
+                    # Let's use normalized fitness (0-1) where 1 is best in current batch.
+                    batch_fitness = np.array([population[i].fitness for i in batch_idx])
+                    # Normalize to [0,1] locally or globally?
+                    # Globally (relative to current pop) is better.
+                    all_fitness = np.array([s.fitness for s in population])
+                    f_min, f_max = all_fitness.min(), all_fitness.max()
+                    if f_max > f_min:
+                        cond_batch = (batch_fitness - f_min) / (f_max - f_min)
+                    else:
+                        cond_batch = np.ones_like(batch_fitness)
+                    
+                    cond_tensor = torch.tensor(cond_batch, dtype=torch.float32).unsqueeze(1).to(device)
+                    # Extend cond to cond_dim if needed (padding)
+                    if models["cond_dim"] > 1:
+                        # Pad with zeros
+                        padding = torch.zeros(batch_size, models["cond_dim"] - 1).to(device)
+                        cond_tensor = torch.cat([cond_tensor, padding], dim=1)
+
+                    
+                    # Generate fake
+                    noise = torch.randn(batch_size, models["noise_dim"]).to(device)
+                    fake_data = netG(noise, cond_tensor).detach()
+                    
+                    # Train D
+                    optD.zero_grad()
+                    d_real = netD(real_data, cond_tensor)
+                    d_fake = netD(fake_data, cond_tensor)
+                    
+                    gp = compute_gradient_penalty(netD, real_data, fake_data, cond_tensor, device)
+                    d_loss = torch.mean(d_fake) - torch.mean(d_real) + lambda_gp * gp
+                    d_loss.backward()
+                    optD.step()
+
+                # Train Generator
+                if start_idx % n_critic == 0:
+                    optG.zero_grad()
+                    noise = torch.randn(batch_size, models["noise_dim"]).to(device)
+                    # For G training, we want to generate "good" solutions.
+                    # Condition on high fitness (1.0)
+                    cond_target = torch.ones(batch_size, 1).to(device)
+                    if models["cond_dim"] > 1:
+                        padding = torch.zeros(batch_size, models["cond_dim"] - 1).to(device)
+                        cond_target = torch.cat([cond_target, padding], dim=1)
+                        
+                    fake_data = netG(noise, cond_target)
+                    d_fake = netD(fake_data, cond_target)
+                    g_loss = -torch.mean(d_fake)
+                    g_loss.backward()
+                    optG.step()
+                    
+        if control.get("progress", False):
+            # Print last losses
+            print(f"  [GAN] Epoch {n_epochs}: D_Loss={d_loss.item():.4f}, G_Loss={g_loss.item():.4f}")
+
+def _generate_neural_offspring(models, control, settypes, candidates, setsizes, n_generate):
+    """
+    Generate offspring using VAE or GAN.
+    """
+    if not models:
+        return []
+    
+    device = models["device"]
+    structure = models["structure"]
+    offspring = []
+    
+    # Helper to decode tensor 'v' back to Solution objects
+    # This is tricky because DecisionStructure.decode just gives us the values (sigmoid/softmax output)
+    # We need to sample/discretize them back to int indices.
+    
+    def decode_to_solution(v_tensor):
+        # v_tensor: (batch, D)
+        # Apply strict discretization now
+        # DecisionStructure.decode_raw_output gave us logits/probs.
+        # But wait, logic in VAE/GAN returns decode_raw_output which IS probs/sigmoid.
+        # So v_tensor here is already in [0,1] or probability space.
+        pass # implemented inline
+    
+    if "vae" in models and control.get("use_vae", False):
+        # Latent sampling (Visualizing / Exploring)
+        # Or simple random sampling in latent space
+        vae = models["vae"]
+        vae.eval()
+        n_vae = int(n_generate * 0.5) if "gan_G" in models else n_generate
+        
+        with torch.no_grad():
+            z = torch.randn(n_vae, vae.latent_dim).to(device)
+            decoded_v = vae.decode(z)
+            # Process decoded_v
+            # Structure: [Binary | Perm1 | Perm2 | ... | Cont]
+            
+            # We need to reconstruct Solution objects
+            current_idx = 0
+            
+            # Binary
+            bin_dim = structure.binary_dim
+            if bin_dim > 0:
+                bin_part = decoded_v[:, :bin_dim]
+                # Threshold
+                bin_discrete = (bin_part > 0.5).int().cpu().numpy()
+                current_idx += bin_dim
+            else:
+                bin_discrete = None
+                
+            # Perms
+            perm_discrete_list = []
+            for (n, k) in structure.permutation_dims:
+                size = n*k
+                p_part = decoded_v[:, current_idx:current_idx+size]
+                current_idx += size
+                
+                # Reshape (N, k, n)
+                p_reshaped = p_part.view(n_vae, k, n)
+                # Argmax per k slot
+                p_indices = torch.argmax(p_reshaped, dim=2).cpu().numpy() # (N, k)
+                perm_discrete_list.append(p_indices)
+                
+            # Cont
+            if structure.continuous_dim > 0:
+                cont_part = decoded_v[:, current_idx:].cpu().numpy()
+            else:
+                cont_part = None
+                
+            # Create Solutions
+            for i in range(n_vae):
+                sol = Solution()
+                
+                # Re-assemble set types
+                bin_ptr = 0
+                perm_ptr = 0
+                cont_ptr = 0
+                
+                # We need to iterate settypes again to put things in right order
+                # ASSUMPTION: The order in settypes MATCHES the order we extracted in `_extract_decision_parts`
+                # which was: BOOL types first, then Perm types, then DBL types.
+                # NO! `_extract_decision_parts` iterates settypes in order and buckets them.
+                # But `DecisionStructure` assumes [All Binaries] [All Perms] [All Cont].
+                # So we must fill `Solution` by picking from these buckets.
+                
+                # But `Solution` structure (int_values list) follows `settypes` order.
+                # So we iterate `settypes` and pop from our buckets.
+                
+                # We need per-type pointers for the *current solution* i
+                
+                s_bin_ptr = 0
+                s_perm_ptr = 0 # index into perm_discrete_list
+                s_cont_ptr = 0
+                
+                current_sol_bin_row = bin_discrete[i] if bin_discrete is not None else []
+                current_sol_cont_row = cont_part[i] if cont_part is not None else []
+                
+                for j, stype in enumerate(settypes):
+                    if stype == "BOOL":
+                        size = len(candidates[j]) # Use candidate length for BOOL to be safe/consistent
+                        # Slice from binaries
+                        vals = current_sol_bin_row[s_bin_ptr : s_bin_ptr+size].tolist()
+                        s_bin_ptr += size
+                        sol.int_values.append(vals)
+                    elif stype in ["OS", "UOS", "OMS", "UOMS"]:
+                        # Slice from perm list
+                        # The list is indexed by permutation SET index
+                        vals = perm_discrete_list[s_perm_ptr][i].tolist()
+                        s_perm_ptr += 1
+                        
+                        # Repair for UOS/OS (unique items)?
+                        # Softmax/Argmax doesn't guarantee uniqueness across k slots
+                        if stype in ["OS", "UOS"]:
+                            if len(set(vals)) < len(vals):
+                                # Fix duplicates: replace dups with unused randoms
+                                used = set(vals)
+                                all_cands = set(range(len(candidates[j])))
+                                unused = list(all_cands - used)
+                                np.random.shuffle(unused)
+                                
+                                new_vals = []
+                                seen = set()
+                                for v in vals:
+                                    if v in seen:
+                                        if unused:
+                                            v = unused.pop()
+                                    seen.add(v)
+                                    new_vals.append(v)
+                                vals = new_vals
+                            
+                            if stype == "UOS":
+                                vals.sort()
+                        
+                        sol.int_values.append(vals)
+                        
+                    elif stype == "DBL":
+                        size = setsizes[j]
+                        vals = current_sol_cont_row[s_cont_ptr : s_cont_ptr+size].tolist()
+                        s_cont_ptr += size
+                        sol.dbl_values.append(vals)
+                        
+                offspring.append(sol)
+
+    if "gan_G" in models and control.get("use_gan", False):
+        netG = models["gan_G"]
+        netG.eval() 
+        n_gan = n_generate - len(offspring)
+        
+        if n_gan > 0:
+            with torch.no_grad():
+                noise = torch.randn(n_gan, models["noise_dim"]).to(device)
+                # Condition on high fitness
+                cond = torch.ones(n_gan, 1).to(device) # Target 1.0 (max)
+                if models["cond_dim"] > 1:
+                    padding = torch.zeros(n_gan, models["cond_dim"] - 1).to(device)
+                    cond = torch.cat([cond, padding], dim=1)
+                    
+                fake_v = netG(noise, cond)
+                
+                # Same decoding logic...
+                # Refactor decoding if possible?
+                # For now copy-paste logic (minus the VAE specific var names)
+                decoded_v = fake_v
+                 
+                # ... [Reusing logic, copy-paste for brevity in tool call]
+                # Binary
+                current_idx = 0
+                bin_dim = structure.binary_dim
+                if bin_dim > 0:
+                    bin_part = decoded_v[:, :bin_dim]
+                    bin_discrete = (bin_part > 0.5).int().cpu().numpy()
+                    current_idx += bin_dim
+                else:
+                    bin_discrete = None
+                    
+                # Perms
+                perm_discrete_list = []
+                for (n, k) in structure.permutation_dims:
+                    size = n*k
+                    p_part = decoded_v[:, current_idx:current_idx+size]
+                    current_idx += size
+                    p_reshaped = p_part.view(n_gan, k, n)
+                    p_indices = torch.argmax(p_reshaped, dim=2).cpu().numpy()
+                    perm_discrete_list.append(p_indices)
+                    
+                # Cont
+                if structure.continuous_dim > 0:
+                    cont_part = decoded_v[:, current_idx:].cpu().numpy()
+                else:
+                    cont_part = None
+                    
+                # Create Solutions
+                for i in range(n_gan):
+                    sol = Solution()
+                    s_bin_ptr = 0
+                    s_perm_ptr = 0
+                    s_cont_ptr = 0
+                    
+                    current_sol_bin_row = bin_discrete[i] if bin_discrete is not None else []
+                    current_sol_cont_row = cont_part[i] if cont_part is not None else []
+                    
+                    for j, stype in enumerate(settypes):
+                        if stype == "BOOL":
+                            size = len(candidates[j])
+                            vals = current_sol_bin_row[s_bin_ptr : s_bin_ptr+size].tolist()
+                            s_bin_ptr += size
+                            sol.int_values.append(vals)
+                        elif stype in ["OS", "UOS", "OMS", "UOMS"]:
+                            vals = perm_discrete_list[s_perm_ptr][i].tolist()
+                            s_perm_ptr += 1
+                            if stype in ["OS", "UOS"]:
+                                if len(set(vals)) < len(vals):
+                                    used = set(vals)
+                                    all_cands = set(range(len(candidates[j])))
+                                    unused = list(all_cands - used)
+                                    np.random.shuffle(unused)
+                                    new_vals = []
+                                    seen = set()
+                                    for v in vals:
+                                        if v in seen:
+                                            if unused: v = unused.pop()
+                                        seen.add(v)
+                                        new_vals.append(v)
+                                    vals = new_vals
+                                if stype == "UOS": vals.sort()
+                            sol.int_values.append(vals)
+                        elif stype == "DBL":
+                            size = setsizes[j]
+                            vals = current_sol_cont_row[s_cont_ptr : s_cont_ptr+size].tolist()
+                            s_cont_ptr += size
+                            sol.dbl_values.append(vals)
+                    offspring.append(sol)
+                    
+    return offspring
+
+
+
 
 def genetic_algorithm(
     data: Dict[str, Any],
@@ -1026,6 +1584,13 @@ def genetic_algorithm(
     
     # Initialize CMA-ES if there are double variables
     cma_optimizer = _initialize_cma_es(settypes, population, control)
+    
+    # Initialize Neural Models (VAE/GAN)
+    nn_models = _initialize_neural_models(control, candidates, setsizes, settypes)
+    nn_update_freq = control.get("nn_update_freq", 5)
+    nn_start_gen = control.get("nn_start_gen", 10)
+    nn_offspring_ratio = control.get("nn_offspring_ratio", 0.2)
+
 
     # Main GA loop
     for gen in range(n_iterations):
@@ -1043,6 +1608,23 @@ def genetic_algorithm(
             control["mutation_func"](offspring, candidates, settypes, mut_prob, mut_intensity)
         else:
             mutation(offspring, candidates, settypes, mut_prob, mut_intensity)
+
+        # --- Neural Network Training & Generation ---
+        if nn_models and gen >= nn_start_gen:
+            # Training
+            if gen % nn_update_freq == 0:
+                # Train on current population
+                _train_neural_models(nn_models, population, control, settypes, setsizes, candidates)
+                
+            # Generation
+            # How many to generate? ratio of pop_size or based on offspring size?
+            n_nn_gen = int(len(offspring) * nn_offspring_ratio)
+            if n_nn_gen > 0:
+                nn_offspring = _generate_neural_offspring(nn_models, control, settypes, candidates, setsizes, n_nn_gen)
+                if show_progress and nn_offspring:
+                     print(f"  [NN] Generated {len(nn_offspring)} neural offspring")
+                offspring.extend(nn_offspring)
+
 
         # --- Surrogate Generation ---
         surrogate_offspring = _generate_surrogate_offspring(
