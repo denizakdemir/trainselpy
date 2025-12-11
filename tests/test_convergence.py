@@ -253,7 +253,9 @@ class TestConvergence(unittest.TestCase):
             return [f1, f2]
 
         # Enable solution diversity to get a good spread
-        self.control["solution_diversity"] = True
+        # Enable solution diversity to get a good spread
+        # self.control["solution_diversity"] = True
+
         
         result = train_sel(
             data={},

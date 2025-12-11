@@ -56,8 +56,6 @@ class ControlParams(TypedDict, total=False):
     neliteIslands: int
     npopIslands: int
     niterSANNislands: int
-    solution_diversity: bool
-    trace: bool
     use_surrogate: bool
     surrogate_start_gen: int
     surrogate_update_freq: int
@@ -227,7 +225,6 @@ def train_sel_control(
     neliteIslands: int = 50,
     npopIslands: int = 200,
     niterSANNislands: int = 30,
-    solution_diversity: bool = True,
     trace: bool = False,
     use_surrogate: bool = False,
     surrogate_start_gen: int = 10,
@@ -304,10 +301,6 @@ def train_sel_control(
         Population size for the island model.
     niterSANNislands : int
         Number of simulated annealing iterations for the island model.
-    solution_diversity : bool
-        Whether to enforce uniqueness of solutions on the Pareto front. When True,
-        duplicate solutions (same selected indices) are eliminated, keeping only 
-        the one with the best overall fitness, ensuring more diverse solutions.
     trace : bool
         Whether to save the trace of the optimization.
     use_surrogate : bool
@@ -371,7 +364,6 @@ def train_sel_control(
         "neliteIslands": neliteIslands,
         "npopIslands": npopIslands,
         "niterSANNislands": niterSANNislands,
-        "solution_diversity": solution_diversity,
         "trace": trace,
         "use_surrogate": use_surrogate,
         "surrogate_start_gen": surrogate_start_gen,
@@ -434,7 +426,6 @@ def set_control_default(size: str = "free", **kwargs) -> ControlParams:
         parallelizable=False,
         mc_cores=1,
         nislands=1,
-        solution_diversity=True,
         **kwargs
     )
 
@@ -466,8 +457,7 @@ def train_sel(
     init_sol: Optional[Dict[str, Any]] = None,
     packages: List[str] = [],
     n_jobs: int = 1,
-    verbose: bool = True,
-    solution_diversity: Optional[bool] = None
+    verbose: bool = True
 ) -> TrainSelResult:
     """
     Optimize the selection of training populations.
@@ -500,11 +490,8 @@ def train_sel(
         Number of jobs for parallelization.
     verbose : bool, optional
         Whether to display progress messages.
-    solution_diversity : bool, optional
-        Whether to enforce uniqueness of solutions on the Pareto front. When True,
-        duplicate solutions (same selected indices) are eliminated, keeping only 
-        the one with the best overall fitness, ensuring more diverse solutions.
-        If not provided, uses the value from control or defaults to True.
+    verbose : bool, optional
+        Whether to display progress messages.
         
     Returns
     -------
@@ -534,15 +521,9 @@ def train_sel(
     if control is None:
         control = set_control_default()
     
-    # Override solution_diversity if explicitly provided
-    if solution_diversity is not None:
-        control["solution_diversity"] = solution_diversity
-    
-    # Extract parameters from control.
     nislands = control.get("nislands", 1)
     parallelizable = control.get("parallelizable", False)
     n_cores = control.get("mc_cores", 1)
-    solution_diversity_param = control.get("solution_diversity", True)
     
     # Validate candidates and setsizes.
     if candidates is None or setsizes is None:
@@ -598,8 +579,7 @@ def train_sel(
                 control=control,
                 init_sol=init_sol,
                 n_stat=n_stat,
-                is_parallel=True,
-                solution_diversity=solution_diversity_param
+                is_parallel=True
             )
         else:
             result = genetic_algorithm(
@@ -612,8 +592,7 @@ def train_sel(
                 control=control,
                 init_sol=init_sol,
                 n_stat=n_stat,
-                is_parallel=False,
-                solution_diversity=solution_diversity_param
+                is_parallel=False
             )
     else:
         # Island model optimization.
@@ -637,8 +616,7 @@ def train_sel(
                 control=inner_control,
                 init_sol=init_sol,
                 n_islands=nislands,
-                n_jobs=n_jobs,
-                solution_diversity=solution_diversity_param
+                n_jobs=n_jobs
             )
         else:
             result = island_model_ga(
@@ -652,8 +630,7 @@ def train_sel(
                 control=inner_control,
                 init_sol=init_sol,
                 n_islands=nislands,
-                n_jobs=1,
-                solution_diversity=solution_diversity_param
+                n_jobs=1
             )
     
     execution_time = time.time() - start_time

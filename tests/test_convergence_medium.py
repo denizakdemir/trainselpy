@@ -22,7 +22,7 @@ class TestConvergenceMedium(unittest.TestCase):
         self.control["mutprob"] = 0.2       # High mutation probability
         self.control["mutintensity"] = 0.1  # Moderate mutation step
         self.control["progress"] = False
-        self.control["solution_diversity"] = True
+        self.control["progress"] = False
 
     def test_rosenbrock(self):
         """
@@ -209,7 +209,7 @@ class TestConvergenceMedium(unittest.TestCase):
         control = self.control.copy()
         control["niterations"] = 500
         control["npop"] = 200
-        control["solution_diversity"] = True
+        control["npop"] = 200
         
         result = train_sel(
             data={},
@@ -279,7 +279,7 @@ class TestConvergenceMedium(unittest.TestCase):
         control = self.control.copy()
         control["niterations"] = 300
         control["npop"] = 200
-        control["solution_diversity"] = True
+        control["npop"] = 200
         
         result = train_sel(
             data={},
@@ -345,7 +345,7 @@ class TestConvergenceMedium(unittest.TestCase):
         control = self.control.copy()
         control["niterations"] = 300
         control["npop"] = 200
-        control["solution_diversity"] = True
+        control["npop"] = 200
         
         result = train_sel(
             data={},
@@ -412,7 +412,7 @@ class TestConvergenceMedium(unittest.TestCase):
         control = self.control.copy()
         control["niterations"] = 400
         control["npop"] = 300
-        control["solution_diversity"] = True
+        control["npop"] = 300
         control["use_nsga3"] = True  # Use NSGA-III for 3 objectives
         
         result = train_sel(

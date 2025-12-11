@@ -825,7 +825,6 @@ def _select_next_generation(
     n_stat: int,
     use_nsga3: bool,
     reference_points: Optional[List[List[float]]],
-    solution_diversity: bool = True,
     candidates: Optional[List[List[int]]] = None,
     setsizes: Optional[List[int]] = None,
     settypes: Optional[List[str]] = None,
@@ -839,6 +838,21 @@ def _select_next_generation(
     """
     Select the next generation of solutions.
     """
+    
+    # Always enforce diversity by removing exact duplicates (by hash) from the combined population
+    # BEFORE any selection logic (MOO or SO).
+    unique_pop = []
+    seen_hashes = set()
+    for sol in combined_pop:
+        sol_hash = sol.get_hash()
+        if sol_hash in seen_hashes:
+            continue
+        seen_hashes.add(sol_hash)
+        unique_pop.append(sol)
+    
+    # Update combined_pop to be the unique version
+    combined_pop = unique_pop
+
     if n_stat > 1:
         if use_nsga3 and reference_points is not None:
             # Use NSGA-III selection
@@ -861,53 +875,52 @@ def _select_next_generation(
                     for i in range(n_needed):
                         population.append(front[sorted_indices[i]])
                     break
+            
+            # If population is smaller than pop_size (because we removed duplicates),
+            # we should refill it.
+            if len(population) < pop_size:
+                 # Check refill condition (30% threshold)
+                min_population_fraction = 0.3
+                if len(population) < pop_size * min_population_fraction:
+                    can_refill = all(v is not None for v in (candidates, setsizes, settypes, stat_func))
+                    if can_refill:
+                        n_needed = pop_size - len(population)
+                        n_generate = int(n_needed * 2)
+                        new_samples = initialize_population(candidates, setsizes, settypes, n_generate)
+                        evaluate_fitness(new_samples, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
+                        
+                        # MOO Sort new samples (we just append them? or merge and resort?)
+                        # Merging and resorting is safer but expensive. 
+                        # For simplicity/speed in refill, let's just take random valid ones?
+                        # Or just append and rely on next gen sorting.
+                        population.extend(new_samples[:n_needed])
+            
             return population
     else:
         # Single-objective: sort by fitness
         combined_pop.sort(key=lambda x: x.fitness, reverse=True)
         
-        if not solution_diversity:
-            return combined_pop[:pop_size]
+        # We already filtered duplicates above.
         
-        # Enforce diversity by removing exact duplicates (by hash)
-        unique_pop = []
-        seen_hashes = set()
-        for sol in combined_pop:
-            sol_hash = sol.get_hash()
-            if sol_hash in seen_hashes:
-                continue
-            seen_hashes.add(sol_hash)
-            unique_pop.append(sol)
-            if len(unique_pop) >= pop_size:
-                break
-
-        # CRITICAL FIX: Improved refill logic to prevent quality degradation
-        # Only refill if population dropped below 30% (was 50%, which was too aggressive)
-        # This balances natural convergence with maintaining diversity
-        min_population_fraction = 0.3  # Balanced threshold (was 0.5)
-        if len(unique_pop) < pop_size * min_population_fraction:
+        # Check refill logic (moved from original SO block)
+        min_population_fraction = 0.3
+        if len(combined_pop) < pop_size * min_population_fraction:
             can_refill = all(v is not None for v in (candidates, setsizes, settypes, stat_func))
             if can_refill:
-                # Generate extra candidates and keep only the best
-                # This prevents diluting population with poor random solutions
-                n_needed = pop_size - len(unique_pop)
-                n_generate = int(n_needed * 2)  # Generate 2x and select best
+                n_needed = pop_size - len(combined_pop)
+                n_generate = int(n_needed * 2)  
 
                 new_samples = initialize_population(candidates, setsizes, settypes, n_generate)
                 evaluate_fitness(new_samples, stat_func, data, n_stat, is_parallel, control, fitness_cache, surrogate_model)
 
                 # Sort and keep only the best n_needed
                 new_samples.sort(key=lambda x: x.fitness, reverse=True)
-                unique_pop.extend(new_samples[:n_needed])
+                combined_pop.extend(new_samples[:n_needed])
 
                 # Re-sort combined population
-                unique_pop.sort(key=lambda x: x.fitness, reverse=True)
-                return unique_pop[:pop_size]
-
-        # If we have enough unique solutions (>30% of pop_size), just return them
-        # Even if less than pop_size, maintaining quality is more important than quantity
-        # Natural convergence is allowed - duplicate solutions indicate local optimum
-        return unique_pop[:pop_size] if len(unique_pop) >= pop_size else unique_pop
+                combined_pop.sort(key=lambda x: x.fitness, reverse=True)
+        
+        return combined_pop[:pop_size]
 
 # --- Helper Functions for Neural Models ---
 
@@ -1471,8 +1484,7 @@ def genetic_algorithm(
     control: Dict[str, Any] = None,
     init_sol: Dict[str, Any] = None,
     n_stat: int = 1,
-    is_parallel: bool = False,
-    solution_diversity: bool = True
+    is_parallel: bool = False
 ) -> Dict[str, Any]:
     """
     Run the genetic algorithm for optimization.
@@ -1499,9 +1511,6 @@ def genetic_algorithm(
         Number of objectives for multi-objective optimization
     is_parallel : bool, optional
         Whether to use parallel evaluation
-    solution_diversity : bool, optional
-        Whether to enforce uniqueness of solutions on the Pareto front. When True,
-        duplicate solutions are eliminated, ensuring more diverse Pareto front.
         
     Returns
     -------
@@ -1665,7 +1674,6 @@ def genetic_algorithm(
             n_stat,
             use_nsga3,
             reference_points,
-            solution_diversity,
             candidates,
             setsizes,
             settypes,
@@ -1863,7 +1871,7 @@ def genetic_algorithm(
                 if fronts:
                     pareto_sols = fronts[0]
                     # Apply diversity filter if enabled
-                    if solution_diversity and pareto_sols:
+                    if pareto_sols:
                         unique_pareto = []
                         seen_hashes = set()
                         for sol in pareto_sols:
@@ -1915,7 +1923,7 @@ def genetic_algorithm(
         pareto_solutions = fronts[0] if fronts else []  # First front is the Pareto front
         
         # Apply solution diversity filtering if enabled
-        if solution_diversity and pareto_solutions:
+        if pareto_solutions:
             unique_pareto = []
             seen_hashes = set()
             
@@ -1960,8 +1968,7 @@ def island_model_ga(
     init_sol: Dict[str, Any] = None,
     n_stat: int = 1,
     n_islands: int = 4,
-    n_jobs: int = 1,
-    solution_diversity: bool = True
+    n_jobs: int = 1
 ) -> Dict[str, Any]:
     """
     Run the island model genetic algorithm for optimization.
@@ -1990,9 +1997,6 @@ def island_model_ga(
         Number of islands
     n_jobs : int, optional
         Number of parallel jobs
-    solution_diversity : bool, optional
-        Whether to enforce uniqueness of solutions on the Pareto front. When True,
-        duplicate solutions are eliminated, ensuring more diverse Pareto front.
         
     Returns
     -------
@@ -2076,7 +2080,7 @@ def island_model_ga(
             pareto_sol_objects = []
 
         # Apply diversity filtering if enabled
-        if solution_diversity and pareto_sol_objects:
+        if pareto_sol_objects:
             unique_pareto = []
             seen_hashes = set()
 
